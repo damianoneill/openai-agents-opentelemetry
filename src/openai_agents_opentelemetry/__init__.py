@@ -23,4 +23,4 @@ Requirements:
 from .opentelemetry_processor import OpenTelemetryTracingProcessor
 
 __all__ = ["OpenTelemetryTracingProcessor"]
-__version__ = "0.1.0"
+__version__ = "0.1.1"

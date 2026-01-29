@@ -1,4 +1,4 @@
-.PHONY: help sync lint format typecheck test coverage check pre-commit pre-commit-all clean bump bump-minor bump-major changelog release
+.PHONY: help sync lint format typecheck test coverage check pre-commit-install pre-commit clean bump bump-minor bump-major changelog release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -17,8 +17,8 @@ help:
 	@echo "  check           Run all checks (format, lint, typecheck, coverage)"
 	@echo ""
 	@echo "Git Hooks:"
-	@echo "  pre-commit      Install pre-commit hooks"
-	@echo "  pre-commit-all  Run pre-commit on all files"
+	@echo "  pre-commit-install  Install pre-commit hooks"
+	@echo "  pre-commit          Run pre-commit on all files"
 	@echo ""
 	@echo "Release:"
 	@echo "  bump            Auto-bump version based on commits"
@@ -59,11 +59,11 @@ coverage:
 check: format lint typecheck coverage
 
 # Install pre-commit hooks
-pre-commit:
+pre-commit-install:
 	uv run pre-commit install
 
 # Run pre-commit on all files
-pre-commit-all:
+pre-commit:
 	uv run pre-commit run --all-files
 
 # Clean build artifacts

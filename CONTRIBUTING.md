@@ -31,7 +31,7 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 5. Install pre-commit hooks:
    ```bash
-   make pre-commit
+   make pre-commit-install
    ```
 
 ## Development Workflow
@@ -47,7 +47,7 @@ make check
 
 Pre-commit hooks run automatically on `git commit`. To run manually:
 ```bash
-make pre-commit-all
+make pre-commit
 ```
 
 ## Code Standards

@@ -1,6 +1,6 @@
 # openai-agents-opentelemetry
 
-[![PyPI version](https://badge.fury.io/py/openai-agents-opentelemetry.svg)](https://badge.fury.io/py/openai-agents-opentelemetry)
+[![PyPI version](https://img.shields.io/pypi/v/openai-agents-opentelemetry.svg)](https://pypi.org/project/openai-agents-opentelemetry/)
 [![CI](https://github.com/damianoneill/openai-agents-opentelemetry/actions/workflows/ci.yml/badge.svg)](https://github.com/damianoneill/openai-agents-opentelemetry/actions/workflows/ci.yml)
 [![Compatibility](https://github.com/damianoneill/openai-agents-opentelemetry/actions/workflows/compatibility.yml/badge.svg)](https://github.com/damianoneill/openai-agents-opentelemetry/actions/workflows/compatibility.yml)
 

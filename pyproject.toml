@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "OpenTelemetry tracing processor for the OpenAI Agents SDK"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Damian ONeill", email = "doneill@juniper.net" }]
+authors = [{ name = "Damian ONeill" }]
 requires-python = ">=3.11"
 keywords = ["openai", "agents", "opentelemetry", "tracing", "observability"]
 classifiers = [

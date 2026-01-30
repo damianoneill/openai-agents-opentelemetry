@@ -46,13 +46,14 @@ set_trace_processors([otel_processor])
 
 The processor maps SDK spans to OpenTelemetry spans following [OpenTelemetry Semantic Conventions for GenAI](https://opentelemetry.io/docs/specs/semconv/gen-ai/):
 
-| SDK Span Type | OTel Span Name | Key Attributes |
-|---------------|----------------|----------------|
-| Agent | `agent: {name}` | `agent.name`, `agent.tools`, `agent.handoffs` |
-| Generation | `gen_ai.completion: {model}` | `gen_ai.request.model`, `gen_ai.usage.*` |
-| Function | `tool: {name}` | `tool.name`, `tool.input`, `tool.output` |
-| Handoff | `handoff: {from} -> {to}` | `agent.handoff.from`, `agent.handoff.to` |
-| Guardrail | `guardrail: {name}` | `agent.guardrail.triggered` |
+| SDK Span Type | OTel Span Name            | Key Attributes                                                                            |
+| ------------- | ------------------------- | ----------------------------------------------------------------------------------------- |
+| Agent         | `agent: {name}`           | `agent.name`, `agent.tools`, `agent.handoffs`                                             |
+| Generation    | `chat {model}`            | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.*` |
+| Function      | `execute_tool {name}`     | `gen_ai.tool.name`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`               |
+| Handoff       | `handoff: {from} -> {to}` | `agent.handoff.from`, `agent.handoff.to`                                                  |
+| Guardrail     | `guardrail: {name}`       | `agent.guardrail.triggered`                                                               |
+| Response      | `gen_ai.response`         | `gen_ai.response.id`, `gen_ai.response.model`                                             |
 
 ## Configuration with OpenTelemetry SDK
 

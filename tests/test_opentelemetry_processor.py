@@ -244,8 +244,9 @@ class MockSDKSpan:
 class MockResponse:
     """Mock OpenAI Response object."""
 
-    def __init__(self, id: str = "resp_123"):
+    def __init__(self, id: str = "resp_123", model: str | None = None):
         self.id = id
+        self.model = model
 
 
 @pytest.fixture
@@ -423,10 +424,10 @@ class TestAgentSpan:
 
 
 class TestGenerationSpan:
-    """Tests for generation span mapping."""
+    """Tests for generation span mapping with OTel GenAI semantic conventions."""
 
     def test_generation_span_attributes(self, mock_otel: Any) -> None:
-        """Test generation span attributes."""
+        """Test generation span has required and recommended OTel GenAI attributes."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
         processor = OpenTelemetryTracingProcessor()
@@ -439,6 +440,15 @@ class TestGenerationSpan:
         processor.on_span_start(span)  # type: ignore[arg-type]
         processor.on_span_end(span)  # type: ignore[arg-type]
         otel_span = mock_otel["tracer"].spans[1]
+
+        # Span name follows OTel convention: "{operation} {model}"
+        assert otel_span.name == "chat gpt-4"
+
+        # Required attributes per OTel GenAI semantic conventions
+        assert otel_span.attributes["gen_ai.operation.name"] == "chat"
+        assert otel_span.attributes["gen_ai.provider.name"] == "openai"
+
+        # Conditionally required / recommended attributes
         assert otel_span.attributes["gen_ai.request.model"] == "gpt-4"
         assert otel_span.attributes["gen_ai.usage.input_tokens"] == 100
 
@@ -526,7 +536,7 @@ class TestFunctionSpan:
     """Tests for function/tool span mapping."""
 
     def test_function_span_basic(self, mock_otel: Any) -> None:
-        """Test basic function span creation."""
+        """Test basic function span creation with OTel GenAI semantic conventions."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
         processor = OpenTelemetryTracingProcessor()
@@ -538,12 +548,17 @@ class TestFunctionSpan:
         processor.on_trace_start(trace)  # type: ignore[arg-type]
         processor.on_span_start(span)  # type: ignore[arg-type]
         otel_span = mock_otel["tracer"].spans[1]
-        assert "tool: search_web" in otel_span.name
-        assert otel_span.attributes["tool.name"] == "search_web"
-        assert otel_span.attributes["tool.input"] == '{"query": "test"}'
+        # Span name follows OTel convention: "execute_tool {tool_name}"
+        assert "execute_tool search_web" in otel_span.name
+        # Required attribute
+        assert otel_span.attributes["gen_ai.operation.name"] == "execute_tool"
+        # Recommended attributes
+        assert otel_span.attributes["gen_ai.tool.name"] == "search_web"
+        assert otel_span.attributes["gen_ai.tool.type"] == "function"
+        assert otel_span.attributes["gen_ai.tool.call.arguments"] == '{"query": "test"}'
 
     def test_function_span_with_output(self, mock_otel: Any) -> None:
-        """Test function span captures output on end."""
+        """Test function span captures output on end with OTel GenAI semantic conventions."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
         processor = OpenTelemetryTracingProcessor()
@@ -560,7 +575,8 @@ class TestFunctionSpan:
         processor.on_span_start(span)  # type: ignore[arg-type]
         processor.on_span_end(span)  # type: ignore[arg-type]
         otel_span = mock_otel["tracer"].spans[1]
-        assert otel_span.attributes["tool.output"] == "Search results here"
+        # Output uses OTel GenAI semantic convention attribute
+        assert otel_span.attributes["gen_ai.tool.call.result"] == "Search results here"
 
     def test_function_span_with_mcp_data(self, mock_otel: Any) -> None:
         """Test function span with MCP data."""
@@ -578,7 +594,7 @@ class TestFunctionSpan:
         processor.on_trace_start(trace)  # type: ignore[arg-type]
         processor.on_span_start(span)  # type: ignore[arg-type]
         otel_span = mock_otel["tracer"].spans[1]
-        assert "tool.mcp_data" in otel_span.attributes
+        assert "mcp.tool.data" in otel_span.attributes
 
 
 class TestHandoffSpan:
@@ -696,20 +712,23 @@ class TestResponseSpan:
     """Tests for response span mapping."""
 
     def test_response_span_with_response(self, mock_otel: Any) -> None:
-        """Test response span with response object."""
+        """Test response span with response object captures id and model."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
         processor = OpenTelemetryTracingProcessor()
         trace = MockTrace(trace_id="trace_123")
         span = MockSDKSpan(
             trace_id="trace_123",
-            span_data=MockResponseSpanData(response=MockResponse(id="resp_abc123")),
+            span_data=MockResponseSpanData(
+                response=MockResponse(id="resp_abc123", model="gpt-4-0613")
+            ),
         )
         processor.on_trace_start(trace)  # type: ignore[arg-type]
         processor.on_span_start(span)  # type: ignore[arg-type]
         otel_span = mock_otel["tracer"].spans[1]
         assert "gen_ai.response" in otel_span.name
         assert otel_span.attributes["gen_ai.response.id"] == "resp_abc123"
+        assert otel_span.attributes["gen_ai.response.model"] == "gpt-4-0613"
 
     def test_response_span_without_response(self, mock_otel: Any) -> None:
         """Test response span without response object."""

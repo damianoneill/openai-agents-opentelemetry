@@ -443,35 +443,77 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """Map generation (LLM call) span data to OTel format.
 
         Uses OpenTelemetry Semantic Conventions for GenAI where applicable.
+        See: https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/
         """
-        name = "gen_ai.completion"
         kind = self._SpanKind.CLIENT  # LLM call is an outbound request
 
+        # Required attributes per OTel GenAI semantic conventions
+        attributes[f"{_ATTR_PREFIX_GEN_AI}.operation.name"] = "chat"
+        attributes[f"{_ATTR_PREFIX_GEN_AI}.provider.name"] = "openai"
+
+        # Span name follows convention: "{operation} {model}"
+        name = "chat"
         if span_data.model:
             attributes[f"{_ATTR_PREFIX_GEN_AI}.request.model"] = span_data.model
-            name = f"gen_ai.completion: {span_data.model}"
+            name = f"chat {span_data.model}"
 
+        # Recommended attributes from model_config
         if span_data.model_config:
-            for key, value in span_data.model_config.items():
-                # Skip None/empty values to avoid attribute spam in traces
-                if value is not None and value != "":
-                    attributes[f"{_ATTR_PREFIX_GEN_AI}.request.{key}"] = _safe_attribute_value(
-                        value
-                    )
+            config = span_data.model_config
+
+            # Map specific known config keys to their semantic convention attributes
+            # Helper to check if value is valid (not None and not empty string)
+            def _is_valid(val: Any) -> bool:
+                return val is not None and val != ""
+
+            if "temperature" in config and _is_valid(config["temperature"]):
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.request.temperature"] = config["temperature"]
+            if "max_tokens" in config and _is_valid(config["max_tokens"]):
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.request.max_tokens"] = config["max_tokens"]
+            if "top_p" in config and _is_valid(config["top_p"]):
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.request.top_p"] = config["top_p"]
+            if "frequency_penalty" in config and _is_valid(config["frequency_penalty"]):
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.request.frequency_penalty"] = config[
+                    "frequency_penalty"
+                ]
+            if "presence_penalty" in config and _is_valid(config["presence_penalty"]):
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.request.presence_penalty"] = config[
+                    "presence_penalty"
+                ]
+            if "stop" in config and _is_valid(config["stop"]):
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.request.stop_sequences"] = _safe_attribute_value(
+                    config["stop"]
+                )
 
         return name, attributes, kind
 
     def _map_function_span(
         self, span_data: Any, attributes: dict[str, Any]
     ) -> tuple[str, dict[str, Any], Any]:
-        """Map function/tool span data to OTel format."""
-        name = f"tool: {span_data.name}"
-        attributes["tool.name"] = span_data.name
+        """Map function/tool span data to OTel format.
 
+        Uses OpenTelemetry Semantic Conventions for GenAI tool execution.
+        See: https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/#execute-tool-span
+        """
+        # Per OTel convention: span name SHOULD be "execute_tool {gen_ai.tool.name}"
+        name = f"execute_tool {span_data.name}"
+
+        # Required attribute
+        attributes[f"{_ATTR_PREFIX_GEN_AI}.operation.name"] = "execute_tool"
+
+        # Recommended attributes
+        attributes[f"{_ATTR_PREFIX_GEN_AI}.tool.name"] = span_data.name
+        attributes[f"{_ATTR_PREFIX_GEN_AI}.tool.type"] = "function"
+
+        # Opt-in: tool call arguments (may contain sensitive data)
         if span_data.input:
-            attributes["tool.input"] = _truncate_string(span_data.input, 4096)
+            attributes[f"{_ATTR_PREFIX_GEN_AI}.tool.call.arguments"] = _truncate_string(
+                span_data.input, 4096
+            )
+
+        # MCP-specific metadata
         if span_data.mcp_data:
-            attributes["tool.mcp_data"] = json.dumps(span_data.mcp_data)
+            attributes["mcp.tool.data"] = json.dumps(span_data.mcp_data)
 
         return name, attributes, self._SpanKind.INTERNAL
 
@@ -514,12 +556,18 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
     def _map_response_span(
         self, span_data: Any, attributes: dict[str, Any]
     ) -> tuple[str, dict[str, Any], Any]:
-        """Map response span data to OTel format."""
+        """Map response span data to OTel format.
+
+        Captures response metadata per OTel GenAI semantic conventions.
+        """
         name = "gen_ai.response"
         response = getattr(span_data, "response", None)
 
-        if response and hasattr(response, "id"):
-            attributes[f"{_ATTR_PREFIX_GEN_AI}.response.id"] = response.id
+        if response:
+            if hasattr(response, "id") and response.id:
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.response.id"] = response.id
+            if hasattr(response, "model") and response.model:
+                attributes[f"{_ATTR_PREFIX_GEN_AI}.response.model"] = response.model
 
         return name, attributes, self._SpanKind.INTERNAL
 
@@ -624,10 +672,15 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 pass
 
     def _update_function_span(self, otel_span: Any, span_data: Any) -> None:
-        """Update function span with output."""
+        """Update function span with output.
+
+        Uses OTel GenAI semantic convention for tool call result.
+        """
         output = getattr(span_data, "output", None)
         if output:
-            otel_span.set_attribute("tool.output", _truncate_string(str(output), 4096))
+            otel_span.set_attribute(
+                f"{_ATTR_PREFIX_GEN_AI}.tool.call.result", _truncate_string(str(output), 4096)
+            )
 
 
 def _safe_attribute_value(value: Any) -> str | int | float | bool:

@@ -71,7 +71,7 @@ version = "0.1.1"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:^version",
-    "src/openai_agents_opentelemetry/__init__.py:^__version__",
+    "src/openai_agents_opentelemetry/_version.py:^__version__",
 ]
 update_changelog_on_bump = true
 changelog_file = "CHANGELOG.md"

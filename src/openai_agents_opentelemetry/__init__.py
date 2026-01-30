@@ -20,7 +20,7 @@ Requirements:
     pip install openai-agents-opentelemetry
 """
 
+from ._version import __version__
 from .opentelemetry_processor import OpenTelemetryTracingProcessor
 
-__all__ = ["OpenTelemetryTracingProcessor"]
-__version__ = "0.1.1"
+__all__ = ["OpenTelemetryTracingProcessor", "__version__"]

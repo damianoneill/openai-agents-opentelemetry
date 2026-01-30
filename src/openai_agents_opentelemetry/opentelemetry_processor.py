@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Any
 
 from agents.tracing import TracingProcessor
 
+from ._version import __version__
+
 if TYPE_CHECKING:
     from agents.tracing.spans import Span as AgentSpan
     from agents.tracing.traces import Trace as AgentTrace
@@ -44,6 +46,15 @@ logger = logging.getLogger(__name__)
 
 # Default tracer name for agent spans
 DEFAULT_TRACER_NAME = "openai.agents"
+
+# Schema URL indicates which semantic conventions version this instrumentation follows.
+# This should be updated when adopting newer semantic convention versions.
+# See: https://opentelemetry.io/docs/specs/otel/schemas/
+# Current versions: https://github.com/open-telemetry/semantic-conventions/tree/main/schemas
+#
+# Note: GenAI semantic conventions are in Development status. Update this URL
+# when conventions stabilize or when adopting newer experimental versions.
+SCHEMA_URL = "https://opentelemetry.io/schemas/1.28.0"
 
 # Attribute key prefixes following OTel semantic conventions
 _ATTR_PREFIX_GEN_AI = "gen_ai"
@@ -119,7 +130,11 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         self._otel_context = otel_context
 
         self._tracer_name = tracer_name
-        self._tracer = trace.get_tracer(tracer_name)
+        self._tracer = trace.get_tracer(
+            tracer_name,
+            instrumenting_library_version=__version__,
+            schema_url=SCHEMA_URL,
+        )
 
         # Lock for thread-safe access to span tracking dictionaries
         self._lock = threading.Lock()

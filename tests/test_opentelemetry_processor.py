@@ -271,6 +271,43 @@ def mock_otel() -> Any:
         yield {"trace": mock_trace, "tracer": mock_tracer, "context": mock_context}
 
 
+class TestInstrumentationScopeVersioning:
+    """Tests for instrumentation scope versioning (Phase 1)."""
+
+    def test_tracer_includes_version_and_schema_url(self, mock_otel: Any) -> None:
+        """Test that tracer is created with version and schema URL."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+        from openai_agents_opentelemetry._version import __version__
+        from openai_agents_opentelemetry.opentelemetry_processor import SCHEMA_URL
+
+        OpenTelemetryTracingProcessor()
+
+        mock_otel["trace"].get_tracer.assert_called_once_with(
+            "openai.agents",
+            instrumenting_library_version=__version__,
+            schema_url=SCHEMA_URL,
+        )
+
+    def test_schema_url_is_valid_format(self) -> None:
+        """Test that SCHEMA_URL follows the expected format."""
+        from openai_agents_opentelemetry.opentelemetry_processor import SCHEMA_URL
+
+        assert SCHEMA_URL.startswith("https://opentelemetry.io/schemas/")
+        # Verify it contains a version number pattern
+        import re
+
+        assert re.search(r"\d+\.\d+\.\d+$", SCHEMA_URL), "Schema URL should end with semver"
+
+    def test_version_is_valid_semver(self) -> None:
+        """Test that __version__ is a valid semver string."""
+        import re
+
+        from openai_agents_opentelemetry._version import __version__
+
+        # Basic semver pattern
+        assert re.match(r"^\d+\.\d+\.\d+", __version__), "__version__ should be semver format"
+
+
 class TestOpenTelemetryTracingProcessor:
     """Tests for the OpenTelemetryTracingProcessor class."""
 
@@ -329,12 +366,18 @@ class TestOpenTelemetryTracingProcessor:
         processor.on_trace_end(trace)  # type: ignore[arg-type]
 
     def test_custom_tracer_name(self, mock_otel: Any) -> None:
-        """Test that custom tracer name is used."""
+        """Test that custom tracer name is used with version and schema URL."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+        from openai_agents_opentelemetry._version import __version__
+        from openai_agents_opentelemetry.opentelemetry_processor import SCHEMA_URL
 
         processor = OpenTelemetryTracingProcessor(tracer_name="my.custom.tracer")
         assert processor._tracer_name == "my.custom.tracer"
-        mock_otel["trace"].get_tracer.assert_called_with("my.custom.tracer")
+        mock_otel["trace"].get_tracer.assert_called_with(
+            "my.custom.tracer",
+            instrumenting_library_version=__version__,
+            schema_url=SCHEMA_URL,
+        )
 
 
 class TestAgentSpan:

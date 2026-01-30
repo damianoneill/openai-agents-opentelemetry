@@ -17,6 +17,7 @@ class MockOTelSpan:
         self.attributes: dict[str, Any] = {}
         self.status: Any = None
         self.ended = False
+        self.events: list[dict[str, Any]] = []
 
     def set_attribute(self, key: str, value: Any) -> None:
         self.attributes[key] = value
@@ -26,6 +27,9 @@ class MockOTelSpan:
 
     def end(self) -> None:
         self.ended = True
+
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
+        self.events.append({"name": name, "attributes": attributes or {}})
 
 
 class MockTracer:
@@ -1488,3 +1492,457 @@ class TestExceptionHandling:
         processor.on_span_start(span)
         # Should not raise on end even with non-serializable data
         processor.on_span_end(span)
+
+
+class TestProcessorConfig:
+    """Tests for ProcessorConfig (Phase 3)."""
+
+    def test_default_config(self) -> None:
+        """Test ProcessorConfig has sensible defaults."""
+        from openai_agents_opentelemetry import ProcessorConfig
+
+        config = ProcessorConfig()
+        assert config.capture_prompts is True
+        assert config.capture_completions is True
+        assert config.capture_tool_inputs is True
+        assert config.capture_tool_outputs is True
+        assert config.max_attribute_length == 4096
+        assert config.max_event_length == 8192
+        assert config.content_filter is None
+
+    def test_custom_config(self) -> None:
+        """Test ProcessorConfig with custom values."""
+        from openai_agents_opentelemetry import ProcessorConfig
+
+        config = ProcessorConfig(
+            capture_prompts=False,
+            capture_completions=False,
+            capture_tool_inputs=False,
+            capture_tool_outputs=False,
+            max_attribute_length=1024,
+            max_event_length=2048,
+        )
+        assert config.capture_prompts is False
+        assert config.capture_completions is False
+        assert config.capture_tool_inputs is False
+        assert config.capture_tool_outputs is False
+        assert config.max_attribute_length == 1024
+        assert config.max_event_length == 2048
+
+    def test_processor_accepts_config(self, mock_otel: Any) -> None:
+        """Test that processor accepts ProcessorConfig."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_prompts=False)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        assert processor._config.capture_prompts is False
+
+
+class TestSpanEvents:
+    """Tests for span events (Phase 3)."""
+
+    def test_generation_span_prompt_event(self, mock_otel: Any) -> None:
+        """Test generation span adds prompt event when configured."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_prompts=True)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                input=[{"role": "user", "content": "Hello"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        prompt_events = [e for e in otel_span.events if e["name"] == "gen_ai.content.prompt"]
+        assert len(prompt_events) == 1
+        assert "gen_ai.prompt" in prompt_events[0]["attributes"]
+
+    def test_generation_span_completion_event(self, mock_otel: Any) -> None:
+        """Test generation span adds completion event when configured."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_completions=True)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                output=[{"role": "assistant", "content": "Hi there!"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        completion_events = [
+            e for e in otel_span.events if e["name"] == "gen_ai.content.completion"
+        ]
+        assert len(completion_events) == 1
+        assert "gen_ai.completion" in completion_events[0]["attributes"]
+
+    def test_generation_span_no_events_when_disabled(self, mock_otel: Any) -> None:
+        """Test generation span does not add events when capture is disabled."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_prompts=False, capture_completions=False)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                input=[{"role": "user", "content": "Hello"}],
+                output=[{"role": "assistant", "content": "Hi"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        gen_ai_events = [e for e in otel_span.events if e["name"].startswith("gen_ai.content")]
+        assert len(gen_ai_events) == 0
+
+    def test_function_span_input_event(self, mock_otel: Any) -> None:
+        """Test function span adds input event when configured."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_tool_inputs=True)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockFunctionSpanData(name="search", input='{"query": "test"}'),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        input_events = [e for e in otel_span.events if e["name"] == "gen_ai.tool.input"]
+        assert len(input_events) == 1
+        assert "gen_ai.tool.call.arguments" in input_events[0]["attributes"]
+
+    def test_function_span_output_event(self, mock_otel: Any) -> None:
+        """Test function span adds output event when configured."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_tool_outputs=True)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span_data = MockFunctionSpanData(name="search", input='{"query": "test"}')
+        span_data.output = "search results here"
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=span_data,
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        output_events = [e for e in otel_span.events if e["name"] == "gen_ai.tool.output"]
+        assert len(output_events) == 1
+        assert "gen_ai.tool.call.result" in output_events[0]["attributes"]
+
+    def test_function_span_no_events_when_disabled(self, mock_otel: Any) -> None:
+        """Test function span does not add events when capture is disabled."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(capture_tool_inputs=False, capture_tool_outputs=False)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span_data = MockFunctionSpanData(name="search", input='{"query": "test"}')
+        span_data.output = "results"
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=span_data,
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        tool_events = [e for e in otel_span.events if e["name"].startswith("gen_ai.tool")]
+        assert len(tool_events) == 0
+
+    def test_guardrail_span_event(self, mock_otel: Any) -> None:
+        """Test guardrail span adds evaluated event."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGuardrailSpanData(name="content_filter", triggered=True),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        guardrail_events = [e for e in otel_span.events if e["name"] == "guardrail.evaluated"]
+        assert len(guardrail_events) == 1
+        assert guardrail_events[0]["attributes"]["guardrail.name"] == "content_filter"
+        assert guardrail_events[0]["attributes"]["guardrail.triggered"] is True
+
+    def test_handoff_span_event(self, mock_otel: Any) -> None:
+        """Test handoff span adds executed event."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockHandoffSpanData(from_agent="agent_a", to_agent="agent_b"),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        handoff_events = [e for e in otel_span.events if e["name"] == "handoff.executed"]
+        assert len(handoff_events) == 1
+        assert handoff_events[0]["attributes"]["handoff.from"] == "agent_a"
+        assert handoff_events[0]["attributes"]["handoff.to"] == "agent_b"
+
+
+class TestContentFilter:
+    """Tests for content filtering (Phase 3)."""
+
+    def test_content_filter_applied_to_prompt(self, mock_otel: Any) -> None:
+        """Test content filter is applied to prompt content."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        def redact_filter(content: str, context: str) -> str:
+            return content.replace("secret", "[REDACTED]")
+
+        config = ProcessorConfig(capture_prompts=True, content_filter=redact_filter)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                input=[{"role": "user", "content": "The secret code is 123"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        prompt_events = [e for e in otel_span.events if e["name"] == "gen_ai.content.prompt"]
+        assert len(prompt_events) == 1
+        assert "[REDACTED]" in prompt_events[0]["attributes"]["gen_ai.prompt"]
+        assert "secret" not in prompt_events[0]["attributes"]["gen_ai.prompt"]
+
+    def test_content_filter_applied_to_completion(self, mock_otel: Any) -> None:
+        """Test content filter is applied to completion content."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        def redact_filter(content: str, context: str) -> str:
+            return content.replace("password", "[HIDDEN]")
+
+        config = ProcessorConfig(capture_completions=True, content_filter=redact_filter)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                output=[{"role": "assistant", "content": "Your password is abc123"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        completion_events = [
+            e for e in otel_span.events if e["name"] == "gen_ai.content.completion"
+        ]
+        assert len(completion_events) == 1
+        assert "[HIDDEN]" in completion_events[0]["attributes"]["gen_ai.completion"]
+
+    def test_content_filter_receives_context(self, mock_otel: Any) -> None:
+        """Test content filter receives correct context parameter."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        contexts_received: list[str] = []
+
+        def tracking_filter(content: str, context: str) -> str:
+            contexts_received.append(context)
+            return content
+
+        config = ProcessorConfig(
+            capture_prompts=True,
+            capture_completions=True,
+            content_filter=tracking_filter,
+        )
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                input=[{"role": "user", "content": "test"}],
+                output=[{"role": "assistant", "content": "response"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        assert "prompt" in contexts_received
+        assert "completion" in contexts_received
+
+    def test_content_filter_exception_handled(self, mock_otel: Any) -> None:
+        """Test content filter exceptions are handled gracefully."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        def failing_filter(content: str, context: str) -> str:
+            raise ValueError("Filter failed")
+
+        config = ProcessorConfig(capture_prompts=True, content_filter=failing_filter)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                input=[{"role": "user", "content": "test content"}],
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        # Should not raise even though filter fails
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        # Original content should be used when filter fails
+        otel_span = mock_otel["tracer"].spans[1]
+        prompt_events = [e for e in otel_span.events if e["name"] == "gen_ai.content.prompt"]
+        assert len(prompt_events) == 1
+        assert "test content" in prompt_events[0]["attributes"]["gen_ai.prompt"]
+
+    def test_content_filter_applied_to_tool_input(self, mock_otel: Any) -> None:
+        """Test content filter is applied to tool input."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        def redact_filter(content: str, context: str) -> str:
+            if context == "tool_input":
+                return content.replace("api_key", "[API_KEY]")
+            return content
+
+        config = ProcessorConfig(capture_tool_inputs=True, content_filter=redact_filter)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockFunctionSpanData(name="api_call", input='{"api_key": "secret123"}'),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        input_events = [e for e in otel_span.events if e["name"] == "gen_ai.tool.input"]
+        assert len(input_events) == 1
+        assert "[API_KEY]" in input_events[0]["attributes"]["gen_ai.tool.call.arguments"]
+
+
+class TestCreateResource:
+    """Tests for create_resource helper (Phase 3)."""
+
+    def test_create_resource_basic(self) -> None:
+        """Test create_resource with basic parameters."""
+        mock_resource = MagicMock()
+        mock_resource_cls = MagicMock()
+        mock_resource_cls.create.return_value = mock_resource
+
+        mock_sdk_resources = MagicMock()
+        mock_sdk_resources.Resource = mock_resource_cls
+
+        with patch.dict("sys.modules", {"opentelemetry.sdk.resources": mock_sdk_resources}):
+            from openai_agents_opentelemetry import create_resource
+
+            result = create_resource(service_name="test-service")
+
+            mock_resource_cls.create.assert_called_once()
+            call_args = mock_resource_cls.create.call_args[0][0]
+            assert call_args["service.name"] == "test-service"
+            assert call_args["telemetry.sdk.name"] == "openai-agents-opentelemetry"
+            assert call_args["telemetry.sdk.language"] == "python"
+            assert call_args["agent.sdk.name"] == "openai-agents"
+            assert result == mock_resource
+
+    def test_create_resource_with_version(self) -> None:
+        """Test create_resource with service version."""
+        mock_resource_cls = MagicMock()
+        mock_resource_cls.create.return_value = MagicMock()
+
+        mock_sdk_resources = MagicMock()
+        mock_sdk_resources.Resource = mock_resource_cls
+
+        with patch.dict("sys.modules", {"opentelemetry.sdk.resources": mock_sdk_resources}):
+            from openai_agents_opentelemetry import create_resource
+
+            create_resource(service_name="test-service", service_version="1.2.3")
+
+            call_args = mock_resource_cls.create.call_args[0][0]
+            assert call_args["service.version"] == "1.2.3"
+
+    def test_create_resource_with_additional_attributes(self) -> None:
+        """Test create_resource with additional custom attributes."""
+        mock_resource_cls = MagicMock()
+        mock_resource_cls.create.return_value = MagicMock()
+
+        mock_sdk_resources = MagicMock()
+        mock_sdk_resources.Resource = mock_resource_cls
+
+        with patch.dict("sys.modules", {"opentelemetry.sdk.resources": mock_sdk_resources}):
+            from openai_agents_opentelemetry import create_resource
+
+            create_resource(
+                service_name="test-service",
+                additional_attributes={
+                    "deployment.environment": "production",
+                    "custom.attribute": "value",
+                },
+            )
+
+            call_args = mock_resource_cls.create.call_args[0][0]
+            assert call_args["deployment.environment"] == "production"
+            assert call_args["custom.attribute"] == "value"
+
+    def test_create_resource_import_error(self) -> None:
+        """Test create_resource raises ImportError when SDK not installed."""
+        with patch.dict("sys.modules", {"opentelemetry.sdk.resources": None}):
+            from openai_agents_opentelemetry.opentelemetry_processor import create_resource
+
+            with pytest.raises(ImportError, match="OpenTelemetry SDK is required"):
+                create_resource(service_name="test-service")
+
+
+class TestContentFilterType:
+    """Tests for ContentFilter type alias."""
+
+    def test_content_filter_type_is_callable(self) -> None:
+        """Test ContentFilter type can be used as a type hint."""
+        from openai_agents_opentelemetry import ContentFilter
+
+        def my_filter(content: str, context: str) -> str:
+            return content.upper()
+
+        # This should type-check correctly
+        filter_func: ContentFilter = my_filter
+        assert filter_func("test", "prompt") == "TEST"

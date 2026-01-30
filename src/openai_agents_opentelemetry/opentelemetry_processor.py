@@ -32,6 +32,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from agents.tracing import TracingProcessor
@@ -59,6 +61,63 @@ SCHEMA_URL = "https://opentelemetry.io/schemas/1.28.0"
 # Attribute key prefixes following OTel semantic conventions
 _ATTR_PREFIX_GEN_AI = "gen_ai"
 _ATTR_PREFIX_AGENT = "agent"
+
+# Type alias for content filter callback
+# Receives (content, context) where context is e.g., "prompt", "completion", "tool_input"
+# Returns filtered content string
+ContentFilter = Callable[[str, str], str]
+
+
+@dataclass
+class ProcessorConfig:
+    """Configuration for the OpenTelemetry tracing processor.
+
+    Controls what content is captured and how it is processed for privacy
+    and compliance requirements.
+
+    Attributes:
+        capture_prompts: Whether to capture prompt/input content as span events.
+        capture_completions: Whether to capture completion/output content as span events.
+        capture_tool_inputs: Whether to capture tool input arguments.
+        capture_tool_outputs: Whether to capture tool output results.
+        max_attribute_length: Maximum length for span attributes (default 4096).
+        max_event_length: Maximum length for span event attributes (default 8192).
+        content_filter: Optional callback to filter/redact content before capture.
+            Receives (content, context) and returns filtered content.
+
+    Example:
+        ```python
+        import re
+
+        def redact_pii(content: str, context: str) -> str:
+            # Redact SSNs
+            content = re.sub(r"\\b\\d{3}-\\d{2}-\\d{4}\\b", "[SSN REDACTED]", content)
+            # Redact email addresses
+            content = re.sub(r"\\b[\\w.-]+@[\\w.-]+\\.\\w+\\b", "[EMAIL REDACTED]", content)
+            return content
+
+        config = ProcessorConfig(
+            capture_prompts=True,
+            capture_completions=True,
+            max_attribute_length=1024,
+            content_filter=redact_pii,
+        )
+        processor = OpenTelemetryTracingProcessor(config=config)
+        ```
+    """
+
+    # Content capture toggles
+    capture_prompts: bool = True
+    capture_completions: bool = True
+    capture_tool_inputs: bool = True
+    capture_tool_outputs: bool = True
+
+    # Size limits
+    max_attribute_length: int = 4096
+    max_event_length: int = 8192
+
+    # Custom content filter callback for redaction/transformation
+    content_filter: ContentFilter | None = field(default=None)
 
 
 def _try_import_opentelemetry() -> tuple[Any, Any, Any, Any, Any]:
@@ -113,12 +172,16 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
     def __init__(
         self,
         tracer_name: str = DEFAULT_TRACER_NAME,
+        config: ProcessorConfig | None = None,
     ) -> None:
         """Initialize the OpenTelemetry tracing processor.
 
         Args:
             tracer_name: Name of the tracer to use. Defaults to "openai.agents".
+            config: Optional configuration for content capture and filtering.
+                If not provided, uses default ProcessorConfig settings.
         """
+        self._config = config or ProcessorConfig()
         trace, span_kind_class, status_class, status_code_class, otel_context = (
             _try_import_opentelemetry()
         )
@@ -294,6 +357,9 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
 
             # Update span with final data (e.g., usage metrics, outputs)
             self._update_span_with_final_data(otel_span, span.span_data)
+
+            # Add span events for content capture (controlled by config)
+            self._add_span_events(otel_span, span.span_data)
 
             # Handle errors - use _safe_attribute_value to avoid serialization failures
             error = span.error
@@ -679,8 +745,129 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         output = getattr(span_data, "output", None)
         if output:
             otel_span.set_attribute(
-                f"{_ATTR_PREFIX_GEN_AI}.tool.call.result", _truncate_string(str(output), 4096)
+                f"{_ATTR_PREFIX_GEN_AI}.tool.call.result",
+                _truncate_string(str(output), self._config.max_attribute_length),
             )
+
+    def _add_span_events(self, otel_span: Any, span_data: Any) -> None:
+        """Add span events for content capture based on span type and config.
+
+        Events provide timeline visibility within spans and handle large payloads
+        better than attributes due to separate size limits.
+
+        Args:
+            otel_span: The OTel span to add events to.
+            span_data: The SDK SpanData object with content.
+        """
+        span_type = span_data.type
+
+        if span_type == "generation":
+            self._add_generation_events(otel_span, span_data)
+        elif span_type == "function":
+            self._add_function_events(otel_span, span_data)
+        elif span_type == "guardrail":
+            self._add_guardrail_event(otel_span, span_data)
+        elif span_type == "handoff":
+            self._add_handoff_event(otel_span, span_data)
+
+    def _add_generation_events(self, otel_span: Any, span_data: Any) -> None:
+        """Add prompt and completion events to generation span."""
+        input_data = getattr(span_data, "input", None)
+        if input_data and self._config.capture_prompts:
+            try:
+                content = json.dumps(list(input_data))
+            except (TypeError, ValueError):
+                content = str(input_data)
+            content = self._apply_content_filter(content, "prompt")
+            otel_span.add_event(
+                "gen_ai.content.prompt",
+                attributes={
+                    f"{_ATTR_PREFIX_GEN_AI}.prompt": _truncate_string(
+                        content, self._config.max_event_length
+                    )
+                },
+            )
+
+        output_data = getattr(span_data, "output", None)
+        if output_data and self._config.capture_completions:
+            try:
+                content = json.dumps(list(output_data))
+            except (TypeError, ValueError):
+                content = str(output_data)
+            content = self._apply_content_filter(content, "completion")
+            otel_span.add_event(
+                "gen_ai.content.completion",
+                attributes={
+                    f"{_ATTR_PREFIX_GEN_AI}.completion": _truncate_string(
+                        content, self._config.max_event_length
+                    )
+                },
+            )
+
+    def _add_function_events(self, otel_span: Any, span_data: Any) -> None:
+        """Add input and output events to function/tool span."""
+        input_data = getattr(span_data, "input", None)
+        if input_data and self._config.capture_tool_inputs:
+            content = self._apply_content_filter(str(input_data), "tool_input")
+            otel_span.add_event(
+                "gen_ai.tool.input",
+                attributes={
+                    f"{_ATTR_PREFIX_GEN_AI}.tool.call.arguments": _truncate_string(
+                        content, self._config.max_event_length
+                    )
+                },
+            )
+
+        output_data = getattr(span_data, "output", None)
+        if output_data and self._config.capture_tool_outputs:
+            content = self._apply_content_filter(str(output_data), "tool_output")
+            otel_span.add_event(
+                "gen_ai.tool.output",
+                attributes={
+                    f"{_ATTR_PREFIX_GEN_AI}.tool.call.result": _truncate_string(
+                        content, self._config.max_event_length
+                    )
+                },
+            )
+
+    def _add_guardrail_event(self, otel_span: Any, span_data: Any) -> None:
+        """Add guardrail evaluated event."""
+        otel_span.add_event(
+            "guardrail.evaluated",
+            attributes={
+                "guardrail.name": span_data.name,
+                "guardrail.triggered": span_data.triggered,
+            },
+        )
+
+    def _add_handoff_event(self, otel_span: Any, span_data: Any) -> None:
+        """Add handoff executed event."""
+        from_agent = getattr(span_data, "from_agent", None) or "unknown"
+        to_agent = getattr(span_data, "to_agent", None) or "unknown"
+        otel_span.add_event(
+            "handoff.executed",
+            attributes={
+                "handoff.from": from_agent,
+                "handoff.to": to_agent,
+            },
+        )
+
+    def _apply_content_filter(self, content: str, context: str) -> str:
+        """Apply content filter if configured.
+
+        Args:
+            content: The content to filter.
+            context: The context type (e.g., "prompt", "completion", "tool_input").
+
+        Returns:
+            The filtered content, or original content if no filter or filter fails.
+        """
+        if self._config.content_filter is not None:
+            try:
+                return self._config.content_filter(content, context)
+            except Exception as e:
+                logger.warning(f"Content filter failed for {context}: {e}")
+        return content
 
 
 def _safe_attribute_value(value: Any) -> str | int | float | bool:
@@ -718,3 +905,70 @@ def _truncate_string(value: str, max_length: int = 4096) -> str:
     if len(value) <= max_length:
         return value
     return value[: max_length - 3] + "..."
+
+
+def create_resource(
+    service_name: str,
+    service_version: str | None = None,
+    additional_attributes: dict[str, str] | None = None,
+) -> Any:
+    """Create an OpenTelemetry Resource with recommended attributes for agent services.
+
+    This helper creates a Resource with standard attributes for agent-based services,
+    including telemetry SDK information and optional custom attributes.
+
+    Args:
+        service_name: The name of the service (maps to service.name).
+        service_version: Optional version of the service (maps to service.version).
+        additional_attributes: Optional dict of additional resource attributes.
+
+    Returns:
+        An OpenTelemetry Resource object configured with the provided attributes.
+
+    Raises:
+        ImportError: If OpenTelemetry SDK packages are not installed.
+
+    Example:
+        ```python
+        from opentelemetry.sdk.trace import TracerProvider
+        from openai_agents_opentelemetry import create_resource
+
+        resource = create_resource(
+            service_name="my-agent-service",
+            service_version="1.0.0",
+            additional_attributes={"deployment.environment": "production"},
+        )
+
+        provider = TracerProvider(resource=resource)
+        ```
+    """
+    try:
+        from opentelemetry.sdk.resources import Resource
+    except ImportError as e:
+        raise ImportError(
+            "OpenTelemetry SDK is required for create_resource. "
+            "Install it with: pip install opentelemetry-sdk"
+        ) from e
+
+    # Try to get agents SDK version
+    try:
+        from agents import __version__ as agents_version
+    except ImportError:
+        agents_version = "unknown"
+
+    attributes: dict[str, str] = {
+        "service.name": service_name,
+        "telemetry.sdk.name": "openai-agents-opentelemetry",
+        "telemetry.sdk.version": __version__,
+        "telemetry.sdk.language": "python",
+        "agent.sdk.name": "openai-agents",
+        "agent.sdk.version": agents_version,
+    }
+
+    if service_version:
+        attributes["service.version"] = service_version
+
+    if additional_attributes:
+        attributes.update(additional_attributes)
+
+    return Resource.create(attributes)

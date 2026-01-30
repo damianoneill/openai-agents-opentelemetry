@@ -55,7 +55,53 @@ The processor maps SDK spans to OpenTelemetry spans following [OpenTelemetry Sem
 | Guardrail     | `guardrail: {name}`       | `agent.guardrail.triggered`                                                               |
 | Response      | `gen_ai.response`         | `gen_ai.response.id`, `gen_ai.response.model`                                             |
 
-## Configuration with OpenTelemetry SDK
+## Configuration
+
+### Content Capture Configuration
+
+Control what content is captured for privacy and compliance using `ProcessorConfig`:
+
+```python
+from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+config = ProcessorConfig(
+    capture_prompts=True,        # Capture prompt content as span events
+    capture_completions=True,    # Capture completion content as span events
+    capture_tool_inputs=True,    # Capture tool input arguments
+    capture_tool_outputs=True,   # Capture tool output results
+    max_attribute_length=4096,   # Max length for span attributes
+    max_event_length=8192,       # Max length for span event attributes
+)
+
+processor = OpenTelemetryTracingProcessor(config=config)
+```
+
+### Content Filtering / PII Redaction
+
+Apply custom filtering to redact sensitive data before capture:
+
+```python
+import re
+from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+def redact_pii(content: str, context: str) -> str:
+    """Custom PII redaction callback."""
+    # Redact SSNs
+    content = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "[SSN REDACTED]", content)
+    # Redact email addresses
+    content = re.sub(r"\b[\w.-]+@[\w.-]+\.\w+\b", "[EMAIL REDACTED]", content)
+    return content
+
+config = ProcessorConfig(
+    capture_prompts=True,
+    capture_completions=True,
+    content_filter=redact_pii,
+)
+
+processor = OpenTelemetryTracingProcessor(config=config)
+```
+
+### OpenTelemetry SDK Configuration
 
 The processor uses the globally configured OpenTelemetry `TracerProvider`. Configure it as you normally would:
 
@@ -77,6 +123,38 @@ from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
 add_trace_processor(OpenTelemetryTracingProcessor())
 ```
+
+### Resource Helper
+
+Use the `create_resource` helper for standard resource attributes:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from openai_agents_opentelemetry import create_resource
+
+resource = create_resource(
+    service_name="my-agent-service",
+    service_version="1.0.0",
+    additional_attributes={"deployment.environment": "production"},
+)
+
+provider = TracerProvider(resource=resource)
+trace.set_tracer_provider(provider)
+```
+
+## Span Events
+
+The processor automatically adds span events for content capture (controlled by `ProcessorConfig`):
+
+| Span Type  | Event Name                  | Attributes                              |
+| ---------- | --------------------------- | --------------------------------------- |
+| Generation | `gen_ai.content.prompt`     | `gen_ai.prompt`                         |
+| Generation | `gen_ai.content.completion` | `gen_ai.completion`                     |
+| Function   | `gen_ai.tool.input`         | `gen_ai.tool.call.arguments`            |
+| Function   | `gen_ai.tool.output`        | `gen_ai.tool.call.result`               |
+| Guardrail  | `guardrail.evaluated`       | `guardrail.name`, `guardrail.triggered` |
+| Handoff    | `handoff.executed`          | `handoff.from`, `handoff.to`            |
 
 ## Compatibility
 

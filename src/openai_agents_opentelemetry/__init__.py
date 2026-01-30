@@ -16,11 +16,43 @@ Usage:
     from agents import set_trace_processors
     set_trace_processors([otel_processor])
 
+Configuration:
+    from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+    # Configure content capture and filtering
+    config = ProcessorConfig(
+        capture_prompts=True,
+        capture_completions=True,
+        max_attribute_length=1024,
+    )
+    processor = OpenTelemetryTracingProcessor(config=config)
+
+Resource Helper:
+    from openai_agents_opentelemetry import create_resource
+    from opentelemetry.sdk.trace import TracerProvider
+
+    resource = create_resource(
+        service_name="my-agent-service",
+        service_version="1.0.0",
+    )
+    provider = TracerProvider(resource=resource)
+
 Requirements:
     pip install openai-agents-opentelemetry
 """
 
 from ._version import __version__
-from .opentelemetry_processor import OpenTelemetryTracingProcessor
+from .opentelemetry_processor import (
+    ContentFilter,
+    OpenTelemetryTracingProcessor,
+    ProcessorConfig,
+    create_resource,
+)
 
-__all__ = ["OpenTelemetryTracingProcessor", "__version__"]
+__all__ = [
+    "OpenTelemetryTracingProcessor",
+    "ProcessorConfig",
+    "ContentFilter",
+    "create_resource",
+    "__version__",
+]

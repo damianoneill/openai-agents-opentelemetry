@@ -43,6 +43,8 @@ Requirements:
 
 from ._version import __version__
 from .opentelemetry_processor import (
+    DURATION_BUCKETS,
+    TOKEN_BUCKETS,
     ContentFilter,
     OpenTelemetryTracingProcessor,
     ProcessorConfig,
@@ -54,5 +56,7 @@ __all__ = [
     "ProcessorConfig",
     "ContentFilter",
     "create_resource",
+    "TOKEN_BUCKETS",
+    "DURATION_BUCKETS",
     "__version__",
 ]

@@ -156,6 +156,54 @@ The processor automatically adds span events for content capture (controlled by 
 | Guardrail  | `guardrail.evaluated`       | `guardrail.name`, `guardrail.triggered` |
 | Handoff    | `handoff.executed`          | `handoff.from`, `handoff.to`            |
 
+## Metrics
+
+Enable metrics collection for token usage, operation duration, and agent-specific counters:
+
+```python
+from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+# Enable metrics collection
+processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+```
+
+### Standard OTel GenAI Metrics
+
+| Metric Name                        | Type      | Unit      | Description                      |
+| ---------------------------------- | --------- | --------- | -------------------------------- |
+| `gen_ai.client.token.usage`        | Histogram | `{token}` | Token consumption (input/output) |
+| `gen_ai.client.operation.duration` | Histogram | `s`       | LLM call duration                |
+
+### Agent-Specific Metrics
+
+| Metric Name                | Type    | Unit           | Description                      |
+| -------------------------- | ------- | -------------- | -------------------------------- |
+| `agent.tool.invocations`   | Counter | `{invocation}` | Tool/function call count by name |
+| `agent.handoffs`           | Counter | `{handoff}`    | Agent handoff count              |
+| `agent.guardrail.triggers` | Counter | `{trigger}`    | Guardrail trigger count by name  |
+| `agent.errors`             | Counter | `{error}`      | Error count by type              |
+
+### Configuring Metrics with OpenTelemetry SDK
+
+```python
+from opentelemetry import metrics
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+
+# Configure metrics export
+exporter = OTLPMetricExporter(endpoint="http://localhost:4317")
+reader = PeriodicExportingMetricReader(exporter)
+provider = MeterProvider(metric_readers=[reader])
+metrics.set_meter_provider(provider)
+
+# Then enable metrics in the processor
+from agents import add_trace_processor
+from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+add_trace_processor(OpenTelemetryTracingProcessor(enable_metrics=True))
+```
+
 ## Compatibility
 
 This package is tested weekly against the latest OpenAI Agents SDK to ensure compatibility.

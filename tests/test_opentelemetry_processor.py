@@ -1946,3 +1946,348 @@ class TestContentFilterType:
         # This should type-check correctly
         filter_func: ContentFilter = my_filter
         assert filter_func("test", "prompt") == "TEST"
+
+
+class TestMetricsSupport:
+    """Tests for metrics support (Phase 4)."""
+
+    def test_metrics_disabled_by_default(self, mock_otel: Any) -> None:
+        """Test that metrics are disabled by default."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        assert processor._enable_metrics is False
+        assert processor._token_histogram is None
+        assert processor._duration_histogram is None
+        assert processor._tool_counter is None
+
+    def test_metrics_enabled_flag(self, mock_otel: Any) -> None:
+        """Test that enable_metrics flag is stored."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = MagicMock()
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            assert processor._enable_metrics is True
+
+    def test_metrics_init_creates_instruments(self, mock_otel: Any) -> None:
+        """Test that metrics instruments are created when enabled."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_meter = MagicMock()
+        mock_histogram = MagicMock()
+        mock_counter = MagicMock()
+        mock_meter.create_histogram.return_value = mock_histogram
+        mock_meter.create_counter.return_value = mock_counter
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+
+            _processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            # Verify histograms created
+            histogram_calls = mock_meter.create_histogram.call_args_list
+            assert len(histogram_calls) == 2
+            assert histogram_calls[0][0][0] == "gen_ai.client.token.usage"
+            assert histogram_calls[1][0][0] == "gen_ai.client.operation.duration"
+
+            # Verify counters created
+            counter_calls = mock_meter.create_counter.call_args_list
+            assert len(counter_calls) == 4
+            counter_names = [call[0][0] for call in counter_calls]
+            assert "agent.tool.invocations" in counter_names
+            assert "agent.handoffs" in counter_names
+            assert "agent.guardrail.triggers" in counter_names
+            assert "agent.errors" in counter_names
+
+    def test_record_token_usage_when_disabled(self, mock_otel: Any) -> None:
+        """Test that token usage is not recorded when metrics disabled."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor(enable_metrics=False)
+        # Should not raise even though histogram is None
+        processor._record_token_usage({"input_tokens": 100, "output_tokens": 50}, "gpt-4")
+
+    def test_record_token_usage_when_enabled(self, mock_otel: Any) -> None:
+        """Test that token usage is recorded when metrics enabled."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_histogram = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = mock_histogram
+            mock_meter.create_counter.return_value = MagicMock()
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            processor._record_token_usage({"input_tokens": 100, "output_tokens": 50}, "gpt-4")
+
+            # Verify histogram.record was called twice (input and output)
+            assert mock_histogram.record.call_count == 2
+            calls = mock_histogram.record.call_args_list
+
+            # Check input tokens call
+            assert calls[0][0][0] == 100
+            assert calls[0][1]["attributes"]["gen_ai.token.type"] == "input"
+            assert calls[0][1]["attributes"]["gen_ai.request.model"] == "gpt-4"
+
+            # Check output tokens call
+            assert calls[1][0][0] == 50
+            assert calls[1][1]["attributes"]["gen_ai.token.type"] == "output"
+
+    def test_record_tool_invocation(self, mock_otel: Any) -> None:
+        """Test that tool invocations are recorded."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            processor._record_tool_invocation("search_web")
+
+            mock_counter.add.assert_called()
+            call_args = mock_counter.add.call_args
+            assert call_args[0][0] == 1
+            assert call_args[1]["attributes"]["gen_ai.tool.name"] == "search_web"
+
+    def test_record_handoff(self, mock_otel: Any) -> None:
+        """Test that handoffs are recorded."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            processor._record_handoff("agent_a", "agent_b")
+
+            mock_counter.add.assert_called()
+            call_args = mock_counter.add.call_args
+            assert call_args[0][0] == 1
+            assert call_args[1]["attributes"]["agent.handoff.from"] == "agent_a"
+            assert call_args[1]["attributes"]["agent.handoff.to"] == "agent_b"
+
+    def test_record_guardrail_trigger_when_triggered(self, mock_otel: Any) -> None:
+        """Test that guardrail triggers are recorded when triggered=True."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            processor._record_guardrail_trigger("content_filter", triggered=True)
+
+            mock_counter.add.assert_called()
+            call_args = mock_counter.add.call_args
+            assert call_args[0][0] == 1
+            assert call_args[1]["attributes"]["agent.guardrail.name"] == "content_filter"
+
+    def test_record_guardrail_trigger_when_not_triggered(self, mock_otel: Any) -> None:
+        """Test that guardrail triggers are NOT recorded when triggered=False."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            # Reset mock to clear init calls
+            mock_counter.reset_mock()
+
+            processor._record_guardrail_trigger("content_filter", triggered=False)
+
+            # Should not be called when not triggered
+            mock_counter.add.assert_not_called()
+
+    def test_record_error(self, mock_otel: Any) -> None:
+        """Test that errors are recorded."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            processor._record_error("ValueError", "generation")
+
+            mock_counter.add.assert_called()
+            call_args = mock_counter.add.call_args
+            assert call_args[0][0] == 1
+            assert call_args[1]["attributes"]["error.type"] == "ValueError"
+            assert call_args[1]["attributes"]["agent.span.type"] == "generation"
+
+    def test_record_operation_duration(self, mock_otel: Any) -> None:
+        """Test that operation duration is recorded."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_histogram = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = mock_histogram
+            mock_meter.create_counter.return_value = MagicMock()
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+            processor._record_operation_duration(1.5, "gpt-4")
+
+            mock_histogram.record.assert_called()
+            call_args = mock_histogram.record.call_args
+            assert call_args[0][0] == 1.5
+            assert call_args[1]["attributes"]["gen_ai.request.model"] == "gpt-4"
+
+    def test_metrics_recorded_on_span_end(self, mock_otel: Any) -> None:
+        """Test that metrics are recorded when span ends."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_histogram = MagicMock()
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = mock_histogram
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(
+                    model="gpt-4", usage={"input_tokens": 100, "output_tokens": 50}
+                ),
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+
+            # Reset to only count calls from on_span_end
+            mock_histogram.reset_mock()
+
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            # Should have recorded token usage
+            assert mock_histogram.record.call_count >= 2
+
+    def test_tool_metric_recorded_on_function_span_end(self, mock_otel: Any) -> None:
+        """Test that tool invocation metric is recorded on function span end."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockFunctionSpanData(name="search_web", input="{}"),
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+
+            # Reset to only count calls from on_span_end
+            mock_counter.reset_mock()
+
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            # Should have recorded tool invocation
+            mock_counter.add.assert_called()
+
+
+class TestMetricsBuckets:
+    """Tests for metric bucket constants."""
+
+    def test_token_buckets_exported(self) -> None:
+        """Test that TOKEN_BUCKETS is exported and has expected values."""
+        from openai_agents_opentelemetry import TOKEN_BUCKETS
+
+        assert isinstance(TOKEN_BUCKETS, tuple)
+        assert len(TOKEN_BUCKETS) > 0
+        assert TOKEN_BUCKETS[0] == 1
+        # Verify exponential growth
+        assert all(TOKEN_BUCKETS[i] < TOKEN_BUCKETS[i + 1] for i in range(len(TOKEN_BUCKETS) - 1))
+
+    def test_duration_buckets_exported(self) -> None:
+        """Test that DURATION_BUCKETS is exported and has expected values."""
+        from openai_agents_opentelemetry import DURATION_BUCKETS
+
+        assert isinstance(DURATION_BUCKETS, tuple)
+        assert len(DURATION_BUCKETS) > 0
+        assert DURATION_BUCKETS[0] == 0.01
+        # Verify exponential growth
+        assert all(
+            DURATION_BUCKETS[i] < DURATION_BUCKETS[i + 1] for i in range(len(DURATION_BUCKETS) - 1)
+        )
+
+
+class TestMetricsImportError:
+    """Tests for metrics import error handling."""
+
+    def test_metrics_import_error(self, mock_otel: Any) -> None:
+        """Test that metrics import error is handled gracefully."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_metrics.side_effect = ImportError("Metrics not available")
+
+            with pytest.raises(ImportError, match="Metrics not available"):
+                OpenTelemetryTracingProcessor(enable_metrics=True)

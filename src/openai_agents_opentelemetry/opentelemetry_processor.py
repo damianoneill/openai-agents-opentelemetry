@@ -62,6 +62,42 @@ SCHEMA_URL = "https://opentelemetry.io/schemas/1.28.0"
 _ATTR_PREFIX_GEN_AI = "gen_ai"
 _ATTR_PREFIX_AGENT = "agent"
 
+# Recommended histogram buckets per OTel GenAI semantic conventions
+# Token buckets: exponential growth for token counts
+TOKEN_BUCKETS = (
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024,
+    4096,
+    16384,
+    65536,
+    262144,
+    1048576,
+    4194304,
+    16777216,
+    67108864,
+)
+# Duration buckets: exponential growth for seconds (10ms to ~82s)
+DURATION_BUCKETS = (
+    0.01,
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.56,
+    5.12,
+    10.24,
+    20.48,
+    40.96,
+    81.92,
+)
+
 # Type alias for content filter callback
 # Receives (content, context) where context is e.g., "prompt", "completion", "tool_input"
 # Returns filtered content string
@@ -142,6 +178,25 @@ def _try_import_opentelemetry() -> tuple[Any, Any, Any, Any, Any]:
     return trace, SpanKind, Status, StatusCode, otel_context
 
 
+def _try_import_opentelemetry_metrics() -> Any:
+    """Try to import OpenTelemetry metrics dependencies.
+
+    Returns:
+        The metrics module.
+
+    Raises:
+        ImportError: If opentelemetry metrics packages are not installed.
+    """
+    try:
+        from opentelemetry import metrics
+    except ImportError as e:
+        raise ImportError(
+            "OpenTelemetry metrics packages are required for metrics support. "
+            "Install them with: pip install opentelemetry-api opentelemetry-sdk"
+        ) from e
+    return metrics
+
+
 class OpenTelemetryTracingProcessor(TracingProcessor):
     """A TracingProcessor that exports traces to OpenTelemetry.
 
@@ -173,6 +228,7 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         self,
         tracer_name: str = DEFAULT_TRACER_NAME,
         config: ProcessorConfig | None = None,
+        enable_metrics: bool = False,
     ) -> None:
         """Initialize the OpenTelemetry tracing processor.
 
@@ -180,8 +236,12 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             tracer_name: Name of the tracer to use. Defaults to "openai.agents".
             config: Optional configuration for content capture and filtering.
                 If not provided, uses default ProcessorConfig settings.
+            enable_metrics: Whether to enable metrics collection. Defaults to False.
+                When enabled, collects token usage, operation duration, and
+                agent-specific metrics (tool invocations, handoffs, guardrail triggers).
         """
         self._config = config or ProcessorConfig()
+        self._enable_metrics = enable_metrics
         trace, span_kind_class, status_class, status_code_class, otel_context = (
             _try_import_opentelemetry()
         )
@@ -208,6 +268,64 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         # SDK spans overlap (e.g., parallel tool calls).
         self._active_spans: dict[str, Any] = {}
         self._trace_root_spans: dict[str, Any] = {}
+
+        # Initialize metrics instruments if enabled
+        self._token_histogram: Any = None
+        self._duration_histogram: Any = None
+        self._tool_counter: Any = None
+        self._handoff_counter: Any = None
+        self._guardrail_counter: Any = None
+        self._error_counter: Any = None
+
+        if enable_metrics:
+            self._init_metrics(tracer_name)
+
+    def _init_metrics(self, meter_name: str) -> None:
+        """Initialize OpenTelemetry metrics instruments.
+
+        Args:
+            meter_name: Name for the meter (typically same as tracer name).
+        """
+        metrics = _try_import_opentelemetry_metrics()
+        meter = metrics.get_meter(
+            meter_name,
+            version=__version__,
+            schema_url=SCHEMA_URL,
+        )
+
+        # Standard OTel GenAI metrics
+        self._token_histogram = meter.create_histogram(
+            "gen_ai.client.token.usage",
+            unit="{token}",
+            description="Number of input and output tokens used",
+        )
+        self._duration_histogram = meter.create_histogram(
+            "gen_ai.client.operation.duration",
+            unit="s",
+            description="Duration of GenAI operations",
+        )
+
+        # OpenAI Agents SDK-specific metrics
+        self._tool_counter = meter.create_counter(
+            "agent.tool.invocations",
+            unit="{invocation}",
+            description="Number of tool invocations",
+        )
+        self._handoff_counter = meter.create_counter(
+            "agent.handoffs",
+            unit="{handoff}",
+            description="Number of agent handoffs",
+        )
+        self._guardrail_counter = meter.create_counter(
+            "agent.guardrail.triggers",
+            unit="{trigger}",
+            description="Number of guardrail triggers",
+        )
+        self._error_counter = meter.create_counter(
+            "agent.errors",
+            unit="{error}",
+            description="Number of errors by type",
+        )
 
     def on_trace_start(self, trace: AgentTrace) -> None:
         """Handle SDK trace start by creating an OTel root span.
@@ -346,6 +464,7 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """
         span_id = span.span_id
         otel_span = None
+        span_data = span.span_data
 
         try:
             with self._lock:
@@ -356,10 +475,13 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 return
 
             # Update span with final data (e.g., usage metrics, outputs)
-            self._update_span_with_final_data(otel_span, span.span_data)
+            self._update_span_with_final_data(otel_span, span_data)
 
             # Add span events for content capture (controlled by config)
-            self._add_span_events(otel_span, span.span_data)
+            self._add_span_events(otel_span, span_data)
+
+            # Record metrics if enabled
+            self._record_span_metrics(span_data, span.error)
 
             # Handle errors - use _safe_attribute_value to avoid serialization failures
             error = span.error
@@ -371,6 +493,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 if error_data:
                     # Use _safe_attribute_value to handle non-serializable data
                     otel_span.set_attribute("error.data", _safe_attribute_value(error_data))
+                # Record error metric
+                self._record_error(type(error).__name__, span_data.type)
             else:
                 otel_span.set_status(self._Status(self._StatusCode.OK))
 
@@ -868,6 +992,173 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             except Exception as e:
                 logger.warning(f"Content filter failed for {context}: {e}")
         return content
+
+    def _record_span_metrics(self, span_data: Any, error: Any) -> None:
+        """Record metrics based on span type.
+
+        Args:
+            span_data: The SDK SpanData object.
+            error: Optional error object if the span had an error.
+        """
+        if not self._enable_metrics:
+            return
+
+        span_type = span_data.type
+
+        if span_type == "generation":
+            # Record token usage metrics
+            usage = getattr(span_data, "usage", None)
+            model = getattr(span_data, "model", None)
+            if usage:
+                self._record_token_usage(usage, model)
+
+        elif span_type == "function":
+            # Record tool invocation metric
+            tool_name = getattr(span_data, "name", "unknown")
+            self._record_tool_invocation(tool_name)
+
+        elif span_type == "handoff":
+            # Record handoff metric
+            from_agent = getattr(span_data, "from_agent", None) or "unknown"
+            to_agent = getattr(span_data, "to_agent", None) or "unknown"
+            self._record_handoff(from_agent, to_agent)
+
+        elif span_type == "guardrail":
+            # Record guardrail trigger metric
+            guardrail_name = getattr(span_data, "name", "unknown")
+            triggered = getattr(span_data, "triggered", False)
+            self._record_guardrail_trigger(guardrail_name, triggered)
+
+    # --- Metrics Recording Methods ---
+
+    def _record_token_usage(
+        self, usage: dict[str, Any], model: str | None, duration_s: float | None = None
+    ) -> None:
+        """Record token usage metrics with required attributes.
+
+        Args:
+            usage: Dictionary containing token counts (input_tokens, output_tokens).
+            model: The model name for the request.
+            duration_s: Optional duration in seconds for the operation.
+        """
+        if not self._enable_metrics or self._token_histogram is None:
+            return
+
+        base_attrs = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": "openai",
+        }
+        if model:
+            base_attrs["gen_ai.request.model"] = model
+
+        try:
+            if "input_tokens" in usage and usage["input_tokens"] is not None:
+                self._token_histogram.record(
+                    usage["input_tokens"],
+                    attributes={**base_attrs, "gen_ai.token.type": "input"},
+                )
+
+            if "output_tokens" in usage and usage["output_tokens"] is not None:
+                self._token_histogram.record(
+                    usage["output_tokens"],
+                    attributes={**base_attrs, "gen_ai.token.type": "output"},
+                )
+
+            # Record duration if provided
+            if duration_s is not None and self._duration_histogram is not None:
+                self._duration_histogram.record(duration_s, attributes=base_attrs)
+
+        except Exception as e:
+            logger.warning(f"Failed to record token usage metrics: {e}")
+
+    def _record_operation_duration(self, duration_s: float, model: str | None) -> None:
+        """Record operation duration metric.
+
+        Args:
+            duration_s: Duration in seconds.
+            model: The model name for the request.
+        """
+        if not self._enable_metrics or self._duration_histogram is None:
+            return
+
+        attrs = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": "openai",
+        }
+        if model:
+            attrs["gen_ai.request.model"] = model
+
+        try:
+            self._duration_histogram.record(duration_s, attributes=attrs)
+        except Exception as e:
+            logger.warning(f"Failed to record operation duration metric: {e}")
+
+    def _record_tool_invocation(self, tool_name: str) -> None:
+        """Record tool invocation metric.
+
+        Args:
+            tool_name: Name of the tool that was invoked.
+        """
+        if not self._enable_metrics or self._tool_counter is None:
+            return
+
+        try:
+            self._tool_counter.add(1, attributes={"gen_ai.tool.name": tool_name})
+        except Exception as e:
+            logger.warning(f"Failed to record tool invocation metric: {e}")
+
+    def _record_handoff(self, from_agent: str, to_agent: str) -> None:
+        """Record handoff metric.
+
+        Args:
+            from_agent: Name of the source agent.
+            to_agent: Name of the target agent.
+        """
+        if not self._enable_metrics or self._handoff_counter is None:
+            return
+
+        try:
+            self._handoff_counter.add(
+                1, attributes={"agent.handoff.from": from_agent, "agent.handoff.to": to_agent}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record handoff metric: {e}")
+
+    def _record_guardrail_trigger(self, guardrail_name: str, triggered: bool) -> None:
+        """Record guardrail trigger metric.
+
+        Args:
+            guardrail_name: Name of the guardrail.
+            triggered: Whether the guardrail was triggered.
+        """
+        if not self._enable_metrics or self._guardrail_counter is None:
+            return
+
+        # Only count if actually triggered
+        if not triggered:
+            return
+
+        try:
+            self._guardrail_counter.add(1, attributes={"agent.guardrail.name": guardrail_name})
+        except Exception as e:
+            logger.warning(f"Failed to record guardrail trigger metric: {e}")
+
+    def _record_error(self, error_type: str, span_type: str) -> None:
+        """Record error metric.
+
+        Args:
+            error_type: Type or category of the error.
+            span_type: The type of span where the error occurred.
+        """
+        if not self._enable_metrics or self._error_counter is None:
+            return
+
+        try:
+            self._error_counter.add(
+                1, attributes={"error.type": error_type, "agent.span.type": span_type}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record error metric: {e}")
 
 
 def _safe_attribute_value(value: Any) -> str | int | float | bool:

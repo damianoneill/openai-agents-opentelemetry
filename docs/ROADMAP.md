@@ -57,11 +57,51 @@ Added context propagation via OpenTelemetry baggage:
 
 ### Logging Correlation
 
-Correlate Python logging with trace context for unified observability.
+**Dependencies**: None
+
+Integrate with OpenTelemetry logging to correlate logs with traces.
+
+> **Note**: The OpenTelemetry Python logging API (`opentelemetry._logs`) uses an underscore prefix
+> indicating it may have limited stability. Monitor for API changes.
+
+```python
+import logging
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+# Set up log provider
+logger_provider = LoggerProvider(resource=resource)
+logger_provider.add_log_record_processor(
+    BatchLogRecordProcessor(OTLPLogExporter())
+)
+set_logger_provider(logger_provider)
+
+# Add handler to capture logs with trace context
+handler = LoggingHandler(logger_provider=logger_provider)
+logging.getLogger().addHandler(handler)
+```
 
 ### Sampling Configuration
 
-Add configurable sampling strategies for high-volume production environments.
+**Dependencies**: None
+
+Custom sampling strategies for production use cases:
+
+- Sample all errors at 100%
+- Sample successful requests at a configurable rate
+- Head-based vs tail-based sampling considerations
+- Parent-based sampling for distributed traces
+
+```python
+from opentelemetry.sdk.trace.sampling import ParentBasedTraceIdRatio, ALWAYS_ON
+
+# Example: Sample 10% of traces, but always sample errors
+sampler = ParentBasedTraceIdRatio(0.1)
+
+# For tail-based sampling, consider using the OpenTelemetry Collector
+# with the tailsamplingprocessor
+```
 
 ---
 

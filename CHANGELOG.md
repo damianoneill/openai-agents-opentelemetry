@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [Unreleased]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/damianoneill/openai-agents-opentelemetry/releases/tag/v0.1.0
 
+## v0.2.0 (2026-01-31)
+
+### BREAKING CHANGE
+
+- Span names and attribute names changed to follow
+OpenTelemetry Semantic Conventions for GenAI.
+
+### Feat
+
+- add baggage support for context propagation (Phase 5)
+- add metrics support for token usage and agent operations (Phase 4)
+- add configurable content capture and span events (Phase 3)
+- align with OTel GenAI semantic conventions (Phase 2)
+- add instrumentation scope versioning (Phase 1)
+
 ## v0.1.1 (2026-01-29)
 
 ### Fix

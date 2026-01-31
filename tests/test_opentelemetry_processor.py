@@ -2423,6 +2423,171 @@ class TestMetricsImportError:
                 OpenTelemetryTracingProcessor(enable_metrics=True)
 
 
+class TestMemoryLeakPrevention:
+    """Tests for memory leak prevention in span lifecycle."""
+
+    def test_span_cleaned_up_on_exception_after_creation(self, mock_otel: Any) -> None:
+        """Test that span is ended if exception occurs after creation but before registration."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+
+        trace = MockTrace(trace_id="trace-leak-test")
+        processor.on_trace_start(trace)
+
+        span = MockSDKSpan(
+            span_id="span-leak-test",
+            trace_id="trace-leak-test",
+            span_data=MockAgentSpanData(name="TestAgent"),
+        )
+
+        # Mock _add_baggage_attributes to raise an exception that bubbles up
+        # (simulating a failure after span creation but before registration)
+        def failing_add_baggage(otel_span):
+            raise RuntimeError("Simulated failure after span creation")
+
+        processor._add_baggage_attributes = failing_add_baggage
+
+        # This should handle the exception and clean up the span
+        processor.on_span_start(span)
+
+        # The span should NOT be in _active_spans since registration failed
+        assert "span-leak-test" not in processor._active_spans
+
+        # Verify the span was created and then ended (memory leak prevention)
+        # We should have 2 spans: trace root + the failed span that was cleaned up
+        assert len(mock_otel["tracer"].spans) == 2
+
+        # The trace root span should NOT be ended yet
+        trace_root_span = mock_otel["tracer"].spans[0]
+        assert trace_root_span.ended is False
+
+        # The failed span SHOULD be ended to prevent memory leak
+        failed_span = mock_otel["tracer"].spans[1]
+        assert failed_span.ended is True
+
+    def test_trace_span_cleaned_up_on_exception_after_creation(self, mock_otel: Any) -> None:
+        """Test that trace root span is ended if exception occurs after creation."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+
+        # Create a trace - we'll simulate failure by patching after span creation
+        trace = MockTrace(
+            trace_id="trace-leak-test-2",
+            name="Test",
+            metadata={"key": "value"},
+        )
+
+        # Patch the lock acquisition to fail after span is created
+        # This simulates an exception after start_span but before registration
+        original_lock = processor._lock
+
+        class FailingLock:
+            def __enter__(self):
+                raise RuntimeError("Simulated lock failure")
+
+            def __exit__(self, *args):
+                pass
+
+        # Replace the lock with one that fails
+        processor._lock = FailingLock()
+
+        # This should handle the exception and clean up the span
+        processor.on_trace_start(trace)
+
+        # Restore the lock for assertions
+        processor._lock = original_lock
+
+        # The trace should NOT be in _trace_root_spans since registration failed
+        assert "trace-leak-test-2" not in processor._trace_root_spans
+
+        # The span should have been ended to prevent memory leak
+        assert len(mock_otel["tracer"].spans) == 1
+        failed_span = mock_otel["tracer"].spans[0]
+        assert failed_span.ended is True
+
+    def test_span_not_leaked_when_post_creation_fails(self, mock_otel: Any) -> None:
+        """Test that spans don't leak when post-creation processing fails."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+
+        trace = MockTrace(trace_id="trace-post-creation-fail")
+        processor.on_trace_start(trace)
+
+        # Mock _add_baggage_attributes to raise an exception
+        def failing_add_baggage(otel_span):
+            raise Exception("Post-creation failure")
+
+        processor._add_baggage_attributes = failing_add_baggage
+
+        # Create multiple spans that will fail during post-creation processing
+        for i in range(5):
+            span = MockSDKSpan(
+                span_id=f"span-{i}",
+                trace_id="trace-post-creation-fail",
+                span_data=MockAgentSpanData(name=f"Agent{i}"),
+            )
+            processor.on_span_start(span)
+
+        # None of the spans should be registered
+        assert len(processor._active_spans) == 0
+
+        # We should have 6 spans: 1 trace root + 5 failed spans
+        assert len(mock_otel["tracer"].spans) == 6
+
+        # The trace root span should NOT be ended
+        trace_root_span = mock_otel["tracer"].spans[0]
+        assert trace_root_span.ended is False
+
+        # All failed spans (indices 1-5) SHOULD be ended to prevent memory leak
+        for i in range(1, 6):
+            assert mock_otel["tracer"].spans[i].ended is True
+
+    def test_successful_span_lifecycle_no_leak(self, mock_otel: Any) -> None:
+        """Test that normal span lifecycle doesn't leave orphaned spans."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+
+        # Create and complete a trace with spans
+        trace = MockTrace(trace_id="trace-normal")
+        processor.on_trace_start(trace)
+
+        span1 = MockSDKSpan(
+            span_id="span-1",
+            trace_id="trace-normal",
+            span_data=MockAgentSpanData(name="Agent1"),
+        )
+        span2 = MockSDKSpan(
+            span_id="span-2",
+            trace_id="trace-normal",
+            span_data=MockAgentSpanData(name="Agent2"),
+        )
+
+        processor.on_span_start(span1)
+        processor.on_span_start(span2)
+
+        # Both spans should be registered
+        assert len(processor._active_spans) == 2
+
+        processor.on_span_end(span1)
+        processor.on_span_end(span2)
+
+        # All spans should be removed from tracking
+        assert len(processor._active_spans) == 0
+
+        processor.on_trace_end(trace)
+
+        # Trace root should be removed
+        assert len(processor._trace_root_spans) == 0
+
+        # All spans should be properly ended
+        for span in mock_otel["tracer"].spans:
+            assert span.ended is True
+
+
 class TestCreateMetricsViews:
     """Tests for create_metrics_views helper function."""
 

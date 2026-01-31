@@ -347,6 +347,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             lookup in _trace_root_spans. This avoids context ordering issues when
             multiple traces or spans overlap.
         """
+        span = None
+        span_registered = False
         try:
             trace_id = trace.trace_id
             workflow_name = trace.name
@@ -374,11 +376,21 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
 
             with self._lock:
                 self._trace_root_spans[trace_id] = span
+                span_registered = True
 
             logger.debug(f"Started OTel span for trace: {trace_id} ({workflow_name})")
 
         except Exception as e:
             logger.error(f"Failed to create OTel span for trace start: {e}")
+            # Clean up span if it was created but not registered (prevents memory leak)
+            if span is not None and not span_registered:
+                try:
+                    span.set_status(
+                        self._Status(self._StatusCode.ERROR, "Failed during trace start")
+                    )
+                    span.end()
+                except Exception:
+                    pass
 
     def on_trace_end(self, trace: AgentTrace) -> None:
         """Handle SDK trace end by closing the OTel root span.
@@ -422,6 +434,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             order, which the SDK does not guarantee. Instead, we explicitly pass parent
             context when creating child spans, avoiding global context manipulation.
         """
+        otel_span = None
+        span_registered = False
         try:
             span_id = span.span_id
             trace_id = span.trace_id
@@ -462,11 +476,21 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
 
             with self._lock:
                 self._active_spans[span_id] = otel_span
+                span_registered = True
 
             logger.debug(f"Started OTel span: {otel_span_name} ({span_id})")
 
         except Exception as e:
             logger.error(f"Failed to create OTel span for span start: {e}")
+            # Clean up span if it was created but not registered (prevents memory leak)
+            if otel_span is not None and not span_registered:
+                try:
+                    otel_span.set_status(
+                        self._Status(self._StatusCode.ERROR, "Failed during span start")
+                    )
+                    otel_span.end()
+                except Exception:
+                    pass
 
     def on_span_end(self, span: AgentSpan[Any]) -> None:
         """Handle SDK span end by closing the OTel span.

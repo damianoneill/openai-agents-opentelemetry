@@ -268,12 +268,26 @@ def mock_otel() -> Any:
     mock_status_code = MagicMock()
     mock_status_code.OK = "OK"
     mock_status_code.ERROR = "ERROR"
+    mock_baggage = MagicMock()
+    mock_baggage.get_baggage.return_value = None
 
     with patch(
         "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry",
-        return_value=(mock_trace, mock_span_kind, mock_status, mock_status_code, mock_context),
+        return_value=(
+            mock_trace,
+            mock_span_kind,
+            mock_status,
+            mock_status_code,
+            mock_context,
+            mock_baggage,
+        ),
     ):
-        yield {"trace": mock_trace, "tracer": mock_tracer, "context": mock_context}
+        yield {
+            "trace": mock_trace,
+            "tracer": mock_tracer,
+            "context": mock_context,
+            "baggage": mock_baggage,
+        }
 
 
 class TestInstrumentationScopeVersioning:
@@ -2277,10 +2291,126 @@ class TestMetricsBuckets:
         )
 
 
+class TestBaggageSupport:
+    """Tests for baggage support (Phase 5)."""
+
+    def test_baggage_keys_default_empty(self, mock_otel: Any) -> None:
+        """Test that baggage_keys defaults to empty list."""
+        from openai_agents_opentelemetry import ProcessorConfig
+
+        config = ProcessorConfig()
+        assert config.baggage_keys == []
+
+    def test_baggage_keys_configured(self, mock_otel: Any) -> None:
+        """Test that baggage_keys can be configured."""
+        from openai_agents_opentelemetry import ProcessorConfig
+
+        config = ProcessorConfig(baggage_keys=["user.id", "session.id", "tenant.id"])
+        assert config.baggage_keys == ["user.id", "session.id", "tenant.id"]
+
+    def test_baggage_attributes_added_to_span(self, mock_otel: Any) -> None:
+        """Test that baggage values are added as span attributes."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        # Configure baggage to return values
+        mock_otel["baggage"].get_baggage.side_effect = lambda key: {
+            "user.id": "user-123",
+            "session.id": "session-456",
+        }.get(key)
+
+        config = ProcessorConfig(baggage_keys=["user.id", "session.id"])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        # Create a trace and span
+        trace = MockTrace(trace_id="trace-1")
+        processor.on_trace_start(trace)
+
+        span = MockSDKSpan(
+            span_id="span-1",
+            trace_id="trace-1",
+            span_data=MockAgentSpanData(name="TestAgent"),
+        )
+        processor.on_span_start(span)
+
+        # Check that baggage values were added to the span
+        otel_span = mock_otel["tracer"].spans[-1]
+        assert otel_span.attributes.get("user.id") == "user-123"
+        assert otel_span.attributes.get("session.id") == "session-456"
+
+    def test_baggage_missing_key_not_added(self, mock_otel: Any) -> None:
+        """Test that missing baggage keys are not added as attributes."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        # Configure baggage to return None for missing keys
+        mock_otel["baggage"].get_baggage.return_value = None
+
+        config = ProcessorConfig(baggage_keys=["user.id", "missing.key"])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        trace = MockTrace(trace_id="trace-1")
+        processor.on_trace_start(trace)
+
+        span = MockSDKSpan(
+            span_id="span-1",
+            trace_id="trace-1",
+            span_data=MockAgentSpanData(name="TestAgent"),
+        )
+        processor.on_span_start(span)
+
+        otel_span = mock_otel["tracer"].spans[-1]
+        assert "user.id" not in otel_span.attributes
+        assert "missing.key" not in otel_span.attributes
+
+    def test_baggage_no_keys_configured_skips_lookup(self, mock_otel: Any) -> None:
+        """Test that baggage lookup is skipped when no keys configured."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        config = ProcessorConfig(baggage_keys=[])  # Empty list
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        trace = MockTrace(trace_id="trace-1")
+        processor.on_trace_start(trace)
+
+        span = MockSDKSpan(
+            span_id="span-1",
+            trace_id="trace-1",
+            span_data=MockAgentSpanData(name="TestAgent"),
+        )
+        processor.on_span_start(span)
+
+        # get_baggage should not be called when no keys are configured
+        mock_otel["baggage"].get_baggage.assert_not_called()
+
+    def test_baggage_exception_handled_gracefully(self, mock_otel: Any) -> None:
+        """Test that exceptions during baggage reading are handled gracefully."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        # Configure baggage to raise an exception
+        mock_otel["baggage"].get_baggage.side_effect = RuntimeError("Baggage error")
+
+        config = ProcessorConfig(baggage_keys=["user.id"])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        trace = MockTrace(trace_id="trace-1")
+        processor.on_trace_start(trace)
+
+        span = MockSDKSpan(
+            span_id="span-1",
+            trace_id="trace-1",
+            span_data=MockAgentSpanData(name="TestAgent"),
+        )
+
+        # Should not raise, exception is caught and logged
+        processor.on_span_start(span)
+
+        # Span should still be created (2 spans: trace root + agent span)
+        assert len(mock_otel["tracer"].spans) == 2
+
+
 class TestMetricsImportError:
     """Tests for metrics import error handling."""
 
-    def test_metrics_import_error(self, mock_otel: Any) -> None:
+    def test_metrics_import_error(self) -> None:
         """Test that metrics import error is handled gracefully."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 

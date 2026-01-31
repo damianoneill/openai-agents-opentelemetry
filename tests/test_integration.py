@@ -14,7 +14,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from opentelemetry import metrics, trace
+from opentelemetry import baggage, context, metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
@@ -653,6 +653,76 @@ class TestIntegrationConcurrency:
 # =============================================================================
 # Shutdown Integration Tests
 # =============================================================================
+
+
+class TestIntegrationBaggage:
+    """Integration tests for baggage context propagation."""
+
+    def test_baggage_propagates_to_spans(self, span_exporter):
+        """Test that baggage values are added as span attributes."""
+        config = ProcessorConfig(baggage_keys=["user.id", "session.id"])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        # Set baggage in the OpenTelemetry context
+        ctx = baggage.set_baggage("user.id", "user-123")
+        ctx = baggage.set_baggage("session.id", "session-456", context=ctx)
+
+        # Attach the context and run agent operations
+        token = context.attach(ctx)
+        try:
+            mock_trace = MockTrace(trace_id="trace-16", name="Baggage Test")
+            mock_span = MockSpan(
+                span_id="span-1",
+                trace_id="trace-16",
+                span_data=MockAgentSpanData(name="BaggageAgent"),
+            )
+
+            processor.on_trace_start(mock_trace)
+            processor.on_span_start(mock_span)
+            processor.on_span_end(mock_span)
+            processor.on_trace_end(mock_trace)
+        finally:
+            context.detach(token)
+
+        spans = span_exporter.get_finished_spans()
+        agent_spans = [s for s in spans if "BaggageAgent" in s.name]
+        assert len(agent_spans) == 1
+
+        agent_span = agent_spans[0]
+        assert agent_span.attributes.get("user.id") == "user-123"
+        assert agent_span.attributes.get("session.id") == "session-456"
+
+    def test_baggage_without_config_not_added(self, span_exporter):
+        """Test that baggage is not added when not configured."""
+        # No baggage_keys configured
+        config = ProcessorConfig(baggage_keys=[])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        # Set baggage in the OpenTelemetry context
+        ctx = baggage.set_baggage("user.id", "user-123")
+        token = context.attach(ctx)
+        try:
+            mock_trace = MockTrace(trace_id="trace-17", name="No Baggage Test")
+            mock_span = MockSpan(
+                span_id="span-1",
+                trace_id="trace-17",
+                span_data=MockAgentSpanData(name="NoBaggageAgent"),
+            )
+
+            processor.on_trace_start(mock_trace)
+            processor.on_span_start(mock_span)
+            processor.on_span_end(mock_span)
+            processor.on_trace_end(mock_trace)
+        finally:
+            context.detach(token)
+
+        spans = span_exporter.get_finished_spans()
+        agent_spans = [s for s in spans if "NoBaggageAgent" in s.name]
+        assert len(agent_spans) == 1
+
+        agent_span = agent_spans[0]
+        # user.id should NOT be in attributes since it wasn't configured
+        assert "user.id" not in agent_span.attributes
 
 
 class TestIntegrationShutdown:

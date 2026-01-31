@@ -120,6 +120,8 @@ class ProcessorConfig:
         max_event_length: Maximum length for span event attributes (default 8192).
         content_filter: Optional callback to filter/redact content before capture.
             Receives (content, context) and returns filtered content.
+        baggage_keys: List of baggage keys to read from OpenTelemetry context and
+            add as span attributes. Enables context propagation across services.
 
     Example:
         ```python
@@ -137,6 +139,7 @@ class ProcessorConfig:
             capture_completions=True,
             max_attribute_length=1024,
             content_filter=redact_pii,
+            baggage_keys=["user.id", "session.id", "tenant.id"],
         )
         processor = OpenTelemetryTracingProcessor(config=config)
         ```
@@ -155,19 +158,23 @@ class ProcessorConfig:
     # Custom content filter callback for redaction/transformation
     content_filter: ContentFilter | None = field(default=None)
 
+    # Baggage keys to read from OpenTelemetry context and add as span attributes
+    # Enables propagation of context like user.id, session.id across agent spans
+    baggage_keys: list[str] = field(default_factory=list)
 
-def _try_import_opentelemetry() -> tuple[Any, Any, Any, Any, Any]:
+
+def _try_import_opentelemetry() -> tuple[Any, Any, Any, Any, Any, Any]:
     """Try to import OpenTelemetry dependencies.
 
     Returns:
-        Tuple of (trace module, SpanKind, Status, StatusCode, Context)
+        Tuple of (trace module, SpanKind, Status, StatusCode, Context, baggage)
 
     Raises:
         ImportError: If opentelemetry packages are not installed.
     """
     try:
+        from opentelemetry import baggage, trace
         from opentelemetry import context as otel_context
-        from opentelemetry import trace
         from opentelemetry.trace import SpanKind, Status, StatusCode
     except ImportError as e:
         raise ImportError(
@@ -175,7 +182,7 @@ def _try_import_opentelemetry() -> tuple[Any, Any, Any, Any, Any]:
             "Install them with: pip install opentelemetry-api opentelemetry-sdk "
             "or pip install openai-agents[opentelemetry]"
         ) from e
-    return trace, SpanKind, Status, StatusCode, otel_context
+    return trace, SpanKind, Status, StatusCode, otel_context, baggage
 
 
 def _try_import_opentelemetry_metrics() -> Any:
@@ -242,7 +249,7 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """
         self._config = config or ProcessorConfig()
         self._enable_metrics = enable_metrics
-        trace, span_kind_class, status_class, status_code_class, otel_context = (
+        trace, span_kind_class, status_class, status_code_class, otel_context, baggage = (
             _try_import_opentelemetry()
         )
 
@@ -251,6 +258,7 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         self._Status = status_class
         self._StatusCode = status_code_class
         self._otel_context = otel_context
+        self._baggage = baggage
 
         self._tracer_name = tracer_name
         self._tracer = trace.get_tracer(
@@ -447,6 +455,10 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 kind=span_kind,
                 attributes=attributes,
             )
+
+            # Read baggage from current OpenTelemetry context and add as span attributes
+            # This enables context propagation (e.g., user.id, session.id) across agent spans
+            self._add_baggage_attributes(otel_span)
 
             with self._lock:
                 self._active_spans[span_id] = otel_span
@@ -975,6 +987,32 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 "handoff.to": to_agent,
             },
         )
+
+    def _add_baggage_attributes(self, otel_span: Any) -> None:
+        """Read baggage from OpenTelemetry context and add as span attributes.
+
+        Baggage enables context propagation across services. The application must
+        set baggage values upstream using the OpenTelemetry baggage API:
+
+            from opentelemetry import baggage, context
+            ctx = baggage.set_baggage("user.id", user_id)
+            with context.attach(ctx):
+                await Runner.run(agent, input)
+
+        Args:
+            otel_span: The OpenTelemetry span to add baggage attributes to.
+        """
+        if not self._config.baggage_keys:
+            return
+
+        try:
+            for key in self._config.baggage_keys:
+                value = self._baggage.get_baggage(key)
+                if value:
+                    # Use the baggage key as the attribute name
+                    otel_span.set_attribute(key, value)
+        except Exception as e:
+            logger.debug(f"Failed to read baggage: {e}")
 
     def _apply_content_filter(self, content: str, context: str) -> str:
         """Apply content filter if configured.

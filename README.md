@@ -71,6 +71,7 @@ config = ProcessorConfig(
     capture_tool_outputs=True,   # Capture tool output results
     max_attribute_length=4096,   # Max length for span attributes
     max_event_length=8192,       # Max length for span event attributes
+    baggage_keys=["user.id", "session.id"],  # Propagate context to spans
 )
 
 processor = OpenTelemetryTracingProcessor(config=config)
@@ -203,6 +204,31 @@ from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
 add_trace_processor(OpenTelemetryTracingProcessor(enable_metrics=True))
 ```
+
+## Context Propagation (Baggage)
+
+Propagate context like user IDs or session IDs across all agent spans using OpenTelemetry baggage:
+
+```python
+from opentelemetry import baggage, context
+from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+# Configure which baggage keys to read and add as span attributes
+config = ProcessorConfig(
+    baggage_keys=["user.id", "session.id", "tenant.id"]
+)
+processor = OpenTelemetryTracingProcessor(config=config)
+
+# Set baggage before running agents
+ctx = baggage.set_baggage("user.id", "user-123")
+ctx = baggage.set_baggage("session.id", "session-456", context=ctx)
+
+with context.attach(ctx):
+    # All spans created during this agent run will have user.id and session.id attributes
+    result = await Runner.run(agent, "Hello!")
+```
+
+This enables filtering traces by user, session, or tenant in your observability backend.
 
 ## Compatibility
 

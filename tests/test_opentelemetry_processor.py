@@ -2421,3 +2421,102 @@ class TestMetricsImportError:
 
             with pytest.raises(ImportError, match="Metrics not available"):
                 OpenTelemetryTracingProcessor(enable_metrics=True)
+
+
+class TestCreateMetricsViews:
+    """Tests for create_metrics_views helper function."""
+
+    def test_create_metrics_views_returns_list(self) -> None:
+        """Test that create_metrics_views returns a list of Views."""
+        from openai_agents_opentelemetry import create_metrics_views
+
+        views = create_metrics_views()
+
+        assert isinstance(views, list)
+        assert len(views) == 2
+
+    def test_create_metrics_views_token_usage_view(self) -> None:
+        """Test that token usage view has correct configuration."""
+        from openai_agents_opentelemetry import TOKEN_BUCKETS, create_metrics_views
+
+        views = create_metrics_views()
+
+        # Find the token usage view
+        token_view = None
+        for view in views:
+            if view._instrument_name == "gen_ai.client.token.usage":
+                token_view = view
+                break
+
+        assert token_view is not None
+        assert token_view._aggregation._boundaries == TOKEN_BUCKETS
+
+    def test_create_metrics_views_duration_view(self) -> None:
+        """Test that duration view has correct configuration."""
+        from openai_agents_opentelemetry import DURATION_BUCKETS, create_metrics_views
+
+        views = create_metrics_views()
+
+        # Find the duration view
+        duration_view = None
+        for view in views:
+            if view._instrument_name == "gen_ai.client.operation.duration":
+                duration_view = view
+                break
+
+        assert duration_view is not None
+        assert duration_view._aggregation._boundaries == DURATION_BUCKETS
+
+    def test_create_metrics_views_bucket_values(self) -> None:
+        """Test that bucket constants have correct values per OTel GenAI spec."""
+        from openai_agents_opentelemetry import DURATION_BUCKETS, TOKEN_BUCKETS
+
+        # Token buckets per OTel GenAI semantic conventions
+        expected_token_buckets = (
+            1,
+            4,
+            16,
+            64,
+            256,
+            1024,
+            4096,
+            16384,
+            65536,
+            262144,
+            1048576,
+            4194304,
+            16777216,
+            67108864,
+        )
+        assert TOKEN_BUCKETS == expected_token_buckets
+
+        # Duration buckets per OTel GenAI semantic conventions
+        expected_duration_buckets = (
+            0.01,
+            0.02,
+            0.04,
+            0.08,
+            0.16,
+            0.32,
+            0.64,
+            1.28,
+            2.56,
+            5.12,
+            10.24,
+            20.48,
+            40.96,
+            81.92,
+        )
+        assert DURATION_BUCKETS == expected_duration_buckets
+
+    def test_create_metrics_views_import_error(self) -> None:
+        """Test that create_metrics_views raises ImportError when SDK not installed."""
+
+        with patch.dict("sys.modules", {"opentelemetry.sdk.metrics.view": None}):
+            with patch(
+                "openai_agents_opentelemetry.opentelemetry_processor.create_metrics_views"
+            ) as mock_func:
+                mock_func.side_effect = ImportError("OpenTelemetry SDK is required")
+
+                with pytest.raises(ImportError, match="OpenTelemetry SDK is required"):
+                    mock_func()

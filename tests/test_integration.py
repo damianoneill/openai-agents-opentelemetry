@@ -22,8 +22,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openai_agents_opentelemetry import (
+    DURATION_BUCKETS,
+    TOKEN_BUCKETS,
     OpenTelemetryTracingProcessor,
     ProcessorConfig,
+    create_metrics_views,
     create_resource,
 )
 
@@ -748,3 +751,108 @@ class TestIntegrationShutdown:
         # Spans should still be exported (shutdown ends unclosed spans)
         spans = span_exporter.get_finished_spans()
         assert len(spans) >= 1
+
+
+class TestIntegrationMetricsViews:
+    """Integration tests for create_metrics_views with real OTel SDK."""
+
+    def test_create_metrics_views_with_meter_provider(self, span_exporter):
+        """Test that create_metrics_views works with a real MeterProvider."""
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+        # Create views using our helper
+        views = create_metrics_views()
+
+        # Create a MeterProvider with the views
+        reader = InMemoryMetricReader()
+        provider = MeterProvider(metric_readers=[reader], views=views)
+
+        # Get a meter and create the histograms
+        meter = provider.get_meter("test-meter")
+
+        token_histogram = meter.create_histogram(
+            "gen_ai.client.token.usage",
+            unit="{token}",
+            description="Token usage",
+        )
+        duration_histogram = meter.create_histogram(
+            "gen_ai.client.operation.duration",
+            unit="s",
+            description="Operation duration",
+        )
+
+        # Record some values
+        token_histogram.record(1000, {"gen_ai.token.type": "input"})
+        token_histogram.record(500, {"gen_ai.token.type": "output"})
+        duration_histogram.record(1.5, {"gen_ai.operation.name": "chat"})
+
+        # Get metrics and verify they were recorded
+        metrics_data = reader.get_metrics_data()
+        assert metrics_data is not None
+
+        # Find the token histogram metric
+        token_metric = None
+        duration_metric = None
+        for resource_metric in metrics_data.resource_metrics:
+            for scope_metric in resource_metric.scope_metrics:
+                for metric in scope_metric.metrics:
+                    if metric.name == "gen_ai.client.token.usage":
+                        token_metric = metric
+                    elif metric.name == "gen_ai.client.operation.duration":
+                        duration_metric = metric
+
+        assert token_metric is not None, "Token metric should be recorded"
+        assert duration_metric is not None, "Duration metric should be recorded"
+
+        # Verify the histogram has the correct bucket boundaries
+        # The data points should use our custom buckets
+        token_data_points = list(token_metric.data.data_points)
+        assert len(token_data_points) == 2  # input and output
+
+        # Verify bucket boundaries match TOKEN_BUCKETS
+        for dp in token_data_points:
+            assert dp.explicit_bounds == TOKEN_BUCKETS
+
+        duration_data_points = list(duration_metric.data.data_points)
+        assert len(duration_data_points) == 1
+
+        # Verify bucket boundaries match DURATION_BUCKETS
+        for dp in duration_data_points:
+            assert dp.explicit_bounds == DURATION_BUCKETS
+
+        # Cleanup
+        provider.shutdown()
+
+    def test_views_have_correct_instrument_names(self):
+        """Test that views target the correct instrument names."""
+        views = create_metrics_views()
+
+        instrument_names = [v._instrument_name for v in views]
+        assert "gen_ai.client.token.usage" in instrument_names
+        assert "gen_ai.client.operation.duration" in instrument_names
+
+    def test_views_have_explicit_bucket_aggregation(self):
+        """Test that views use ExplicitBucketHistogramAggregation."""
+        from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation
+
+        views = create_metrics_views()
+
+        for view in views:
+            assert isinstance(view._aggregation, ExplicitBucketHistogramAggregation)
+
+    def test_token_view_has_correct_boundaries(self):
+        """Test that token usage view has OTel GenAI recommended bucket boundaries."""
+        views = create_metrics_views()
+
+        token_view = next(v for v in views if v._instrument_name == "gen_ai.client.token.usage")
+        assert token_view._aggregation._boundaries == TOKEN_BUCKETS
+
+    def test_duration_view_has_correct_boundaries(self):
+        """Test that duration view has OTel GenAI recommended bucket boundaries."""
+        views = create_metrics_views()
+
+        duration_view = next(
+            v for v in views if v._instrument_name == "gen_ai.client.operation.duration"
+        )
+        assert duration_view._aggregation._boundaries == DURATION_BUCKETS

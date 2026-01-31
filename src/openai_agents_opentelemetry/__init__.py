@@ -37,6 +37,24 @@ Resource Helper:
     )
     provider = TracerProvider(resource=resource)
 
+Metrics with Recommended Bucket Boundaries:
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+    from openai_agents_opentelemetry import (
+        OpenTelemetryTracingProcessor,
+        create_metrics_views,
+    )
+
+    # Create meter provider with recommended views for GenAI metrics
+    reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+    views = create_metrics_views()
+    meter_provider = MeterProvider(metric_readers=[reader], views=views)
+    metrics.set_meter_provider(meter_provider)
+
+    # Create processor with metrics enabled
+    processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
 Requirements:
     pip install openai-agents-opentelemetry
 """
@@ -48,6 +66,7 @@ from .opentelemetry_processor import (
     ContentFilter,
     OpenTelemetryTracingProcessor,
     ProcessorConfig,
+    create_metrics_views,
     create_resource,
 )
 
@@ -56,6 +75,7 @@ __all__ = [
     "ProcessorConfig",
     "ContentFilter",
     "create_resource",
+    "create_metrics_views",
     "TOKEN_BUCKETS",
     "DURATION_BUCKETS",
     "__version__",

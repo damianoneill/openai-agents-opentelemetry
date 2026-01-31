@@ -1236,6 +1236,65 @@ def _truncate_string(value: str, max_length: int = 4096) -> str:
     return value[: max_length - 3] + "..."
 
 
+def create_metrics_views() -> list[Any]:
+    """Create OpenTelemetry Views with recommended bucket boundaries for GenAI metrics.
+
+    This function returns a list of Views that configure the histogram bucket
+    boundaries according to the OpenTelemetry Semantic Conventions for GenAI.
+    These Views should be passed to the MeterProvider to ensure proper
+    histogram aggregation for token usage and operation duration metrics.
+
+    Without these Views, the OpenTelemetry SDK uses default bucket boundaries
+    that are not suitable for GenAI workloads:
+    - Token counts can range from 1 to millions (large context windows)
+    - Operation durations follow different patterns than typical HTTP requests
+
+    Returns:
+        A list of View objects configured for GenAI metrics.
+
+    Raises:
+        ImportError: If OpenTelemetry SDK packages are not installed.
+
+    Example:
+        ```python
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            create_metrics_views,
+        )
+
+        # Create meter provider with recommended views
+        reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+        views = create_metrics_views()
+        meter_provider = MeterProvider(metric_readers=[reader], views=views)
+        metrics.set_meter_provider(meter_provider)
+
+        # Create processor with metrics enabled
+        processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+        ```
+    """
+    try:
+        from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
+    except ImportError as e:
+        raise ImportError(
+            "OpenTelemetry SDK is required for create_metrics_views. "
+            "Install it with: pip install opentelemetry-sdk"
+        ) from e
+
+    return [
+        View(
+            instrument_name="gen_ai.client.token.usage",
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=TOKEN_BUCKETS),
+        ),
+        View(
+            instrument_name="gen_ai.client.operation.duration",
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=DURATION_BUCKETS),
+        ),
+    ]
+
+
 def create_resource(
     service_name: str,
     service_version: str | None = None,

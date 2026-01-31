@@ -186,23 +186,43 @@ processor = OpenTelemetryTracingProcessor(enable_metrics=True)
 
 ### Configuring Metrics with OpenTelemetry SDK
 
+Use `create_metrics_views()` to configure histogram bucket boundaries according to the [OpenTelemetry Semantic Conventions for GenAI](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-metrics/). Without these views, the SDK uses default buckets that are not suitable for GenAI workloads:
+
+- **Token counts** can range from 1 to millions (large context windows like GPT-4 128k or Claude 200k)
+- **Operation durations** follow different patterns than typical HTTP requests
+
 ```python
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from openai_agents_opentelemetry import (
+    OpenTelemetryTracingProcessor,
+    create_metrics_views,
+)
 
-# Configure metrics export
+# Configure metrics with recommended GenAI histogram buckets
 exporter = OTLPMetricExporter(endpoint="http://localhost:4317")
 reader = PeriodicExportingMetricReader(exporter)
-provider = MeterProvider(metric_readers=[reader])
+views = create_metrics_views()  # Returns views with OTel GenAI recommended bucket boundaries
+provider = MeterProvider(metric_readers=[reader], views=views)
 metrics.set_meter_provider(provider)
 
 # Then enable metrics in the processor
 from agents import add_trace_processor
-from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
 
 add_trace_processor(OpenTelemetryTracingProcessor(enable_metrics=True))
+```
+
+The `create_metrics_views()` function configures:
+
+- `gen_ai.client.token.usage`: Buckets `[1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864]`
+- `gen_ai.client.operation.duration`: Buckets `[0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92]`
+
+You can also access these bucket constants directly if needed:
+
+```python
+from openai_agents_opentelemetry import TOKEN_BUCKETS, DURATION_BUCKETS
 ```
 
 ## Context Propagation (Baggage)

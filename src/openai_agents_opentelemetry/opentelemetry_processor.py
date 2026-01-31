@@ -34,6 +34,7 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from agents.tracing import TracingProcessor
@@ -517,7 +518,7 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             self._add_span_events(otel_span, span_data)
 
             # Record metrics if enabled
-            self._record_span_metrics(span_data, span.error)
+            self._record_span_metrics(span_data, span.error, span)
 
             # Handle errors - use _safe_attribute_value to avoid serialization failures
             error = span.error
@@ -529,8 +530,9 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 if error_data:
                     # Use _safe_attribute_value to handle non-serializable data
                     otel_span.set_attribute("error.data", _safe_attribute_value(error_data))
-                # Record error metric
-                self._record_error(type(error).__name__, span_data.type)
+                # Record error metric - extract meaningful error type from dict
+                error_type = self._extract_error_type(error)
+                self._record_error(error_type, span_data.type)
             else:
                 otel_span.set_status(self._Status(self._StatusCode.OK))
 
@@ -733,8 +735,14 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
 
         # Opt-in: tool call arguments (may contain sensitive data)
         if span_data.input:
+            # Convert to string if dict/list, otherwise use as-is
+            input_value = span_data.input
+            if isinstance(input_value, (dict, list)):
+                input_value = json.dumps(input_value)
+            else:
+                input_value = str(input_value)
             attributes[f"{_ATTR_PREFIX_GEN_AI}.tool.call.arguments"] = _truncate_string(
-                span_data.input, 4096
+                input_value, self._config.max_attribute_length
             )
 
         # MCP-specific metadata
@@ -904,9 +912,14 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """
         output = getattr(span_data, "output", None)
         if output:
+            # Convert to string if dict/list, otherwise use as-is
+            if isinstance(output, (dict, list)):
+                output_value = json.dumps(output)
+            else:
+                output_value = str(output)
             otel_span.set_attribute(
                 f"{_ATTR_PREFIX_GEN_AI}.tool.call.result",
-                _truncate_string(str(output), self._config.max_attribute_length),
+                _truncate_string(output_value, self._config.max_attribute_length),
             )
 
     def _add_span_events(self, otel_span: Any, span_data: Any) -> None:
@@ -1055,12 +1068,15 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 logger.warning(f"Content filter failed for {context}: {e}")
         return content
 
-    def _record_span_metrics(self, span_data: Any, error: Any) -> None:
+    def _record_span_metrics(
+        self, span_data: Any, error: Any, span: AgentSpan[Any] | None = None
+    ) -> None:
         """Record metrics based on span type.
 
         Args:
             span_data: The SDK SpanData object.
             error: Optional error object if the span had an error.
+            span: Optional SDK span object for accessing timestamps.
         """
         if not self._enable_metrics:
             return
@@ -1071,8 +1087,15 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             # Record token usage metrics
             usage = getattr(span_data, "usage", None)
             model = getattr(span_data, "model", None)
+
+            # Compute duration from span timestamps if available
+            duration_s = self._compute_span_duration(span)
+
             if usage:
-                self._record_token_usage(usage, model)
+                self._record_token_usage(usage, model, duration_s)
+            elif duration_s is not None:
+                # Record duration even without token usage
+                self._record_operation_duration(duration_s, model)
 
         elif span_type == "function":
             # Record tool invocation metric
@@ -1186,6 +1209,39 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         except Exception as e:
             logger.warning(f"Failed to record handoff metric: {e}")
 
+    def _compute_span_duration(self, span: AgentSpan[Any] | None) -> float | None:
+        """Compute span duration from SDK span timestamps.
+
+        Args:
+            span: The SDK span object with started_at and ended_at attributes.
+
+        Returns:
+            Duration in seconds, or None if timestamps are not available.
+        """
+        if span is None:
+            return None
+
+        started_at = getattr(span, "started_at", None)
+        ended_at = getattr(span, "ended_at", None)
+
+        if not started_at or not ended_at:
+            return None
+
+        try:
+            # Parse ISO format timestamps
+            # Handle both with and without 'Z' suffix
+            start_str = started_at.replace("Z", "+00:00")
+            end_str = ended_at.replace("Z", "+00:00")
+
+            start_time = datetime.fromisoformat(start_str)
+            end_time = datetime.fromisoformat(end_str)
+
+            duration = (end_time - start_time).total_seconds()
+            return duration if duration >= 0 else None
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse span timestamps: {e}")
+            return None
+
     def _record_guardrail_trigger(self, guardrail_name: str, triggered: bool) -> None:
         """Record guardrail trigger metric.
 
@@ -1204,6 +1260,34 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             self._guardrail_counter.add(1, attributes={"agent.guardrail.name": guardrail_name})
         except Exception as e:
             logger.warning(f"Failed to record guardrail trigger metric: {e}")
+
+    def _extract_error_type(self, error: Any) -> str:
+        """Extract a meaningful error type from an error object.
+
+        The SDK provides errors as dicts with fields like 'type', 'code', 'message'.
+        This method extracts the most meaningful identifier for metrics.
+
+        Args:
+            error: The error object (typically a dict from the SDK).
+
+        Returns:
+            A string identifying the error type for metrics.
+        """
+        if isinstance(error, dict):
+            # Try 'type' first (e.g., "RateLimitError")
+            if error.get("type"):
+                return str(error["type"])
+            # Fall back to 'code' (e.g., "INVALID_REQUEST")
+            if error.get("code"):
+                return str(error["code"])
+            # Use a portion of the message as last resort
+            if error.get("message"):
+                # Truncate message to make it usable as a metric dimension
+                msg = str(error["message"])[:50]
+                return msg if msg else "unknown"
+            return "unknown"
+        # If error is not a dict, use its type name
+        return type(error).__name__
 
     def _record_error(self, error_type: str, span_type: str) -> None:
         """Record error metric.

@@ -114,8 +114,8 @@ class MockFunctionSpanData:
     def __init__(
         self,
         name: str = "test_tool",
-        input: str | None = None,
-        output: str | None = None,
+        input: str | dict[str, Any] | list[Any] | None = None,
+        output: str | dict[str, Any] | list[Any] | None = None,
         mcp_data: dict[str, Any] | None = None,
     ):
         self.name = name
@@ -228,21 +228,25 @@ class MockUnknownSpanData:
 
 
 class MockSDKSpan:
-    """Mock SDK Span for testing."""
+    """Mock SDK Span object."""
 
     def __init__(
         self,
         span_id: str = "span_123",
-        trace_id: str = "trace_abc",
+        trace_id: str = "trace_123",
         parent_id: str | None = None,
         span_data: Any = None,
         error: dict[str, Any] | None = None,
+        started_at: str | None = None,
+        ended_at: str | None = None,
     ):
         self.span_id = span_id
         self.trace_id = trace_id
         self.parent_id = parent_id
         self.span_data = span_data or MockAgentSpanData()
         self.error = error
+        self.started_at = started_at
+        self.ended_at = ended_at
 
 
 class MockResponse:
@@ -2685,3 +2689,339 @@ class TestCreateMetricsViews:
 
                 with pytest.raises(ImportError, match="OpenTelemetry SDK is required"):
                     mock_func()
+
+
+class TestIssue1DictToolInputs:
+    """Tests for Issue 1: Tool-call arguments must handle dict/list inputs."""
+
+    def test_function_span_with_dict_input(self, mock_otel: Any) -> None:
+        """Test that function spans handle dict inputs correctly (not just strings)."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        # Pass a dict input, which is common for tool arguments
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockFunctionSpanData(
+                name="get_weather",
+                input={"city": "London", "units": "celsius"},  # dict, not string!
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        otel_span = mock_otel["tracer"].spans[1]
+        # Should be serialized to JSON string
+        args = otel_span.attributes["gen_ai.tool.call.arguments"]
+        assert isinstance(args, str)
+        assert "London" in args
+        assert "celsius" in args
+
+    def test_function_span_with_list_input(self, mock_otel: Any) -> None:
+        """Test that function spans handle list inputs correctly."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockFunctionSpanData(
+                name="search",
+                input=["query1", "query2", "query3"],  # list, not string!
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        otel_span = mock_otel["tracer"].spans[1]
+        args = otel_span.attributes["gen_ai.tool.call.arguments"]
+        assert isinstance(args, str)
+        assert "query1" in args
+
+    def test_function_span_with_dict_output(self, mock_otel: Any) -> None:
+        """Test that function spans handle dict outputs correctly."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockFunctionSpanData(
+                name="get_weather",
+                input='{"city": "London"}',
+                output={"temperature": 20, "condition": "sunny"},  # dict output!
+            ),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        processor.on_span_end(span)  # type: ignore[arg-type]
+        otel_span = mock_otel["tracer"].spans[1]
+        result = otel_span.attributes["gen_ai.tool.call.result"]
+        assert isinstance(result, str)
+        assert "20" in result
+        assert "sunny" in result
+
+    def test_function_span_respects_config_max_attribute_length(self, mock_otel: Any) -> None:
+        """Test that tool arguments respect ProcessorConfig.max_attribute_length."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+
+        # Use a small max_attribute_length
+        config = ProcessorConfig(max_attribute_length=50)
+        processor = OpenTelemetryTracingProcessor(config=config)
+        trace = MockTrace(trace_id="trace_123")
+        # Create input longer than 50 chars
+        long_input = {"query": "a" * 100}
+        span = MockSDKSpan(
+            trace_id="trace_123",
+            span_data=MockFunctionSpanData(name="search", input=long_input),
+        )
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+        otel_span = mock_otel["tracer"].spans[1]
+        args = otel_span.attributes["gen_ai.tool.call.arguments"]
+        # Should be truncated to max_attribute_length
+        assert len(args) <= 50
+        assert args.endswith("...")
+
+
+class TestIssue2ErrorTypeExtraction:
+    """Tests for Issue 2: Error metrics should extract meaningful error type from dict."""
+
+    def test_record_error_extracts_type_from_dict(self, mock_otel: Any) -> None:
+        """Test that _record_error receives the actual error type, not 'dict'."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(model="gpt-4"),
+                error={"message": "Rate limit exceeded", "type": "RateLimitError"},
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            # Find the call to the error counter
+            error_calls = [
+                call
+                for call in mock_counter.add.call_args_list
+                if call[1].get("attributes", {}).get("error.type")
+            ]
+            assert len(error_calls) > 0
+            # Should be "RateLimitError", not "dict"
+            error_type = error_calls[0][1]["attributes"]["error.type"]
+            assert error_type == "RateLimitError"
+            assert error_type != "dict"
+
+    def test_record_error_uses_code_when_no_type(self, mock_otel: Any) -> None:
+        """Test that error code is used when type is not available."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(model="gpt-4"),
+                error={"message": "Something failed", "code": "INVALID_REQUEST"},
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            error_calls = [
+                call
+                for call in mock_counter.add.call_args_list
+                if call[1].get("attributes", {}).get("error.type")
+            ]
+            assert len(error_calls) > 0
+            error_type = error_calls[0][1]["attributes"]["error.type"]
+            assert error_type == "INVALID_REQUEST"
+
+    def test_record_error_fallback_to_message(self, mock_otel: Any) -> None:
+        """Test fallback to message when no type or code available."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(model="gpt-4"),
+                error={"message": "Something failed"},  # No type or code
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            error_calls = [
+                call
+                for call in mock_counter.add.call_args_list
+                if call[1].get("attributes", {}).get("error.type")
+            ]
+            assert len(error_calls) > 0
+            error_type = error_calls[0][1]["attributes"]["error.type"]
+            # Falls back to truncated message when no type or code
+            assert error_type == "Something failed"
+
+    def test_record_error_fallback_to_unknown_no_usable_fields(self, mock_otel: Any) -> None:
+        """Test fallback to 'unknown' when error dict has no type, code, or message."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_counter = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = MagicMock()
+            mock_meter.create_counter.return_value = mock_counter
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(model="gpt-4"),
+                # Error with unknown fields - still truthy but no usable type/code/message
+                error={"data": {"some": "data"}, "timestamp": "2024-01-01"},
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            error_calls = [
+                call
+                for call in mock_counter.add.call_args_list
+                if call[1].get("attributes", {}).get("error.type")
+            ]
+            assert len(error_calls) > 0
+            error_type = error_calls[0][1]["attributes"]["error.type"]
+            assert error_type == "unknown"
+
+
+class TestIssue3DurationMetrics:
+    """Tests for Issue 3: Duration metrics should be emitted during span processing."""
+
+    def test_duration_metric_recorded_on_generation_span_end(self, mock_otel: Any) -> None:
+        """Test that duration metrics are recorded when a generation span ends."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_histogram = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = mock_histogram
+            mock_meter.create_counter.return_value = MagicMock()
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            # Provide timestamps so duration can be calculated
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(
+                    model="gpt-4",
+                    usage={"input_tokens": 100, "output_tokens": 50},
+                ),
+                started_at="2024-01-01T10:00:00.000Z",
+                ended_at="2024-01-01T10:00:01.500Z",  # 1.5 seconds later
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            # Check that histogram.record was called with duration
+            record_calls = mock_histogram.record.call_args_list
+            # Should have calls for tokens AND duration
+            # Find a call that looks like a duration (value between 0 and 10 seconds)
+            duration_calls = [
+                call
+                for call in record_calls
+                if isinstance(call[0][0], (int, float))
+                and 0 < call[0][0] < 10
+                and call[1].get("attributes", {}).get("gen_ai.operation.name") == "chat"
+            ]
+            assert len(duration_calls) > 0, "Duration metric should be recorded"
+            # Duration should be approximately 1.5 seconds
+            recorded_duration = duration_calls[0][0][0]
+            assert 1.0 < recorded_duration < 2.0
+
+    def test_duration_metric_not_recorded_without_timestamps(self, mock_otel: Any) -> None:
+        """Test that duration is not recorded when timestamps are not available."""
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        mock_histogram = MagicMock()
+
+        with patch(
+            "openai_agents_opentelemetry.opentelemetry_processor._try_import_opentelemetry_metrics"
+        ) as mock_metrics:
+            mock_meter = MagicMock()
+            mock_metrics.return_value.get_meter.return_value = mock_meter
+            mock_meter.create_histogram.return_value = mock_histogram
+            mock_meter.create_counter.return_value = MagicMock()
+
+            processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+            trace = MockTrace(trace_id="trace_123")
+            # No timestamps provided
+            span = MockSDKSpan(
+                trace_id="trace_123",
+                span_data=MockGenerationSpanData(
+                    model="gpt-4",
+                    usage={"input_tokens": 100, "output_tokens": 50},
+                ),
+            )
+
+            processor.on_trace_start(trace)  # type: ignore[arg-type]
+            processor.on_span_start(span)  # type: ignore[arg-type]
+            processor.on_span_end(span)  # type: ignore[arg-type]
+
+            # Token metrics should still be recorded
+            record_calls = mock_histogram.record.call_args_list
+            token_calls = [
+                call
+                for call in record_calls
+                if call[1].get("attributes", {}).get("gen_ai.token.type") is not None
+            ]
+            assert len(token_calls) > 0, "Token metrics should still be recorded"

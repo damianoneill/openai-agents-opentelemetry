@@ -56,17 +56,21 @@ class MockSpan:
 
     def __init__(
         self,
-        span_id: str,
-        trace_id: str,
+        span_id: str = "span-1",
+        trace_id: str = "trace-1",
         parent_id: str | None = None,
         span_data: Any = None,
-        error: Any = None,
+        error: dict[str, Any] | None = None,
+        started_at: str | None = None,
+        ended_at: str | None = None,
     ):
         self.span_id = span_id
         self.trace_id = trace_id
         self.parent_id = parent_id
         self.span_data = span_data
         self.error = error
+        self.started_at = started_at
+        self.ended_at = ended_at
 
 
 class MockAgentSpanData:
@@ -118,8 +122,8 @@ class MockFunctionSpanData:
     def __init__(
         self,
         name: str = "test_function",
-        input: str | None = None,
-        output: str | None = None,
+        input: str | dict[str, Any] | list[Any] | None = None,
+        output: str | dict[str, Any] | list[Any] | None = None,
         mcp_data: dict[str, Any] | None = None,
     ):
         self.name = name
@@ -856,3 +860,109 @@ class TestIntegrationMetricsViews:
             v for v in views if v._instrument_name == "gen_ai.client.operation.duration"
         )
         assert duration_view._aggregation._boundaries == DURATION_BUCKETS
+
+
+class TestIntegrationDictToolInputs:
+    """Integration tests for dict/list tool inputs (Issue 1 fix)."""
+
+    def test_function_span_with_dict_input(self, span_exporter):
+        """Test that function spans handle dict inputs correctly."""
+        processor = OpenTelemetryTracingProcessor()
+        mock_trace = MockTrace(trace_id="trace-dict-1")
+        mock_span = MockSpan(
+            span_id="span-1",
+            trace_id="trace-dict-1",
+            span_data=MockFunctionSpanData(
+                name="get_weather",
+                input={"city": "London", "units": "celsius"},  # dict, not string!
+                output={"temperature": 20, "condition": "sunny"},
+            ),
+        )
+
+        processor.on_trace_start(mock_trace)
+        processor.on_span_start(mock_span)
+        processor.on_span_end(mock_span)
+        processor.on_trace_end(mock_trace)
+
+        spans = span_exporter.get_finished_spans()
+        func_spans = [s for s in spans if s.name == "execute_tool get_weather"]
+        assert len(func_spans) == 1
+
+        func_span = func_spans[0]
+        # Arguments should be serialized to JSON string
+        args = func_span.attributes.get("gen_ai.tool.call.arguments")
+        assert isinstance(args, str)
+        assert "London" in args
+        assert "celsius" in args
+
+        # Output should also be serialized to JSON string
+        result = func_span.attributes.get("gen_ai.tool.call.result")
+        assert isinstance(result, str)
+        assert "20" in result
+        assert "sunny" in result
+
+    def test_function_span_with_list_input(self, span_exporter):
+        """Test that function spans handle list inputs correctly."""
+        processor = OpenTelemetryTracingProcessor()
+        mock_trace = MockTrace(trace_id="trace-list-1")
+        mock_span = MockSpan(
+            span_id="span-1",
+            trace_id="trace-list-1",
+            span_data=MockFunctionSpanData(
+                name="search",
+                input=["query1", "query2", "query3"],  # list, not string!
+            ),
+        )
+
+        processor.on_trace_start(mock_trace)
+        processor.on_span_start(mock_span)
+        processor.on_span_end(mock_span)
+        processor.on_trace_end(mock_trace)
+
+        spans = span_exporter.get_finished_spans()
+        func_spans = [s for s in spans if s.name == "execute_tool search"]
+        assert len(func_spans) == 1
+
+        func_span = func_spans[0]
+        args = func_span.attributes.get("gen_ai.tool.call.arguments")
+        assert isinstance(args, str)
+        assert "query1" in args
+
+
+class TestIntegrationDurationMetrics:
+    """Integration tests for duration metrics (Issue 3 fix)."""
+
+    def test_duration_metric_recorded_with_timestamps(self, span_exporter, metric_reader):
+        """Test that duration metrics are recorded when timestamps are provided."""
+        processor = OpenTelemetryTracingProcessor(enable_metrics=True)
+
+        mock_trace = MockTrace(trace_id="trace-duration-1")
+        mock_span = MockSpan(
+            span_id="span-1",
+            trace_id="trace-duration-1",
+            span_data=MockGenerationSpanData(
+                model="gpt-4",
+                usage={"input_tokens": 100, "output_tokens": 50},
+            ),
+            started_at="2024-01-01T10:00:00.000Z",
+            ended_at="2024-01-01T10:00:01.500Z",  # 1.5 seconds later
+        )
+
+        processor.on_trace_start(mock_trace)
+        processor.on_span_start(mock_span)
+        processor.on_span_end(mock_span)
+        processor.on_trace_end(mock_trace)
+
+        # Force metric collection
+        metrics_data = metric_reader.get_metrics_data()
+
+        # Find duration metric
+        duration_metrics = []
+        if metrics_data and metrics_data.resource_metrics:
+            for resource_metric in metrics_data.resource_metrics:
+                for scope_metric in resource_metric.scope_metrics:
+                    for metric in scope_metric.metrics:
+                        if metric.name == "gen_ai.client.operation.duration":
+                            duration_metrics.append(metric)
+
+        assert len(duration_metrics) > 0, "Duration metric should be recorded"

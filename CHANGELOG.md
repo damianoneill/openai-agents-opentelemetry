@@ -5,7 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ### Added
 
 - Initial release of `openai-agents-opentelemetry`
@@ -28,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-commit hooks for code quality enforcement
 - Conventional commit message enforcement
 
-[Unreleased]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/damianoneill/openai-agents-opentelemetry/releases/tag/v0.1.0
@@ -37,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fix
 
+- remove unreachable is_recording() guards
 - guard span attribute writes with is_recording()
 
 ## v0.2.1 (2026-01-31)
@@ -52,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### BREAKING CHANGE
 
 - Span names and attribute names changed to follow
-OpenTelemetry Semantic Conventions for GenAI.
+  OpenTelemetry Semantic Conventions for GenAI.
 
 ### Feat
 

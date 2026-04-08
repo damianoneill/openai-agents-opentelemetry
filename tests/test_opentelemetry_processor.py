@@ -3077,3 +3077,4 @@ class TestIsRecordingGuard:
         initial_attrs = len(otel_span.attributes)
         processor.on_span_end(span)
         assert len(otel_span.attributes) == initial_attrs
+        assert otel_span.status is None

@@ -74,14 +74,17 @@ clean:
 # Version bumping with commitizen (auto-detects bump type from commits)
 bump:
 	uv run cz bump
+	uv lock
 
 # Bump minor version (e.g., 0.1.0 -> 0.2.0)
 bump-minor:
 	uv run cz bump --increment MINOR
+	uv lock
 
 # Bump major version (e.g., 0.1.0 -> 1.0.0)
 bump-major:
 	uv run cz bump --increment MAJOR
+	uv lock
 
 # Generate/update changelog from commits
 changelog:
@@ -90,3 +93,4 @@ changelog:
 # Full release: run checks, bump version, update changelog, create tag
 release: check
 	uv run cz bump --changelog
+	uv lock

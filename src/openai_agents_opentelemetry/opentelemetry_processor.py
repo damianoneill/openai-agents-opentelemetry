@@ -873,9 +873,10 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 otel_span.set_attribute("mcp.tools.list", json.dumps(result[:20]))
 
     def _update_generation_span(self, otel_span: Any, span_data: Any) -> None:
-        """Update generation span with final usage metrics and output."""
-        if not otel_span.is_recording():
-            return
+        """Update generation span with final usage metrics and output.
+
+        Note: Assumes caller has verified otel_span.is_recording() is True.
+        """
         usage = getattr(span_data, "usage", None)
         if usage:
             if "input_tokens" in usage:
@@ -916,9 +917,9 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """Update function span with output.
 
         Uses OTel GenAI semantic convention for tool call result.
+
+        Note: Assumes caller has verified otel_span.is_recording() is True.
         """
-        if not otel_span.is_recording():
-            return
         output = getattr(span_data, "output", None)
         if output:
             # Convert to string if dict/list, otherwise use as-is

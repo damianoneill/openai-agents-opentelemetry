@@ -407,7 +407,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 otel_span = self._trace_root_spans.pop(trace_id, None)
 
             if otel_span:
-                otel_span.set_status(self._Status(self._StatusCode.OK))
+                if otel_span.is_recording():
+                    otel_span.set_status(self._Status(self._StatusCode.OK))
                 logger.debug(f"Ended OTel span for trace: {trace_id}")
             else:
                 logger.warning(f"No OTel span found for trace end: {trace_id}")
@@ -523,18 +524,20 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             # Handle errors - use _safe_attribute_value to avoid serialization failures
             error = span.error
             if error:
-                error_msg = error.get("message", "Unknown error")
-                otel_span.set_status(self._Status(self._StatusCode.ERROR, error_msg))
-                otel_span.set_attribute("error.message", error.get("message", ""))
-                error_data = error.get("data")
-                if error_data:
-                    # Use _safe_attribute_value to handle non-serializable data
-                    otel_span.set_attribute("error.data", _safe_attribute_value(error_data))
+                if otel_span.is_recording():
+                    error_msg = error.get("message", "Unknown error")
+                    otel_span.set_status(self._Status(self._StatusCode.ERROR, error_msg))
+                    otel_span.set_attribute("error.message", error.get("message", ""))
+                    error_data = error.get("data")
+                    if error_data:
+                        # Use _safe_attribute_value to handle non-serializable data
+                        otel_span.set_attribute("error.data", _safe_attribute_value(error_data))
                 # Record error metric - extract meaningful error type from dict
                 error_type = self._extract_error_type(error)
                 self._record_error(error_type, span_data.type)
             else:
-                otel_span.set_status(self._Status(self._StatusCode.OK))
+                if otel_span.is_recording():
+                    otel_span.set_status(self._Status(self._StatusCode.OK))
 
             logger.debug(f"Ended OTel span: {span_id}")
 
@@ -849,6 +852,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             otel_span: The OTel span to update.
             span_data: The SDK SpanData object with final values.
         """
+        if not otel_span.is_recording():
+            return
         span_type = span_data.type
 
         if span_type == "generation":
@@ -868,7 +873,10 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 otel_span.set_attribute("mcp.tools.list", json.dumps(result[:20]))
 
     def _update_generation_span(self, otel_span: Any, span_data: Any) -> None:
-        """Update generation span with final usage metrics and output."""
+        """Update generation span with final usage metrics and output.
+
+        Note: Assumes caller has verified otel_span.is_recording() is True.
+        """
         usage = getattr(span_data, "usage", None)
         if usage:
             if "input_tokens" in usage:
@@ -909,6 +917,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """Update function span with output.
 
         Uses OTel GenAI semantic convention for tool call result.
+
+        Note: Assumes caller has verified otel_span.is_recording() is True.
         """
         output = getattr(span_data, "output", None)
         if output:
@@ -932,6 +942,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             otel_span: The OTel span to add events to.
             span_data: The SDK SpanData object with content.
         """
+        if not otel_span.is_recording():
+            return
         span_type = span_data.type
 
         if span_type == "generation":

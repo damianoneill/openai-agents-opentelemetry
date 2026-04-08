@@ -31,6 +31,9 @@ class MockOTelSpan:
     def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
         self.events.append({"name": name, "attributes": attributes or {}})
 
+    def is_recording(self) -> bool:
+        return not self.ended
+
 
 class MockTracer:
     """Mock OpenTelemetry tracer for testing."""
@@ -3025,3 +3028,53 @@ class TestIssue3DurationMetrics:
                 if call[1].get("attributes", {}).get("gen_ai.token.type") is not None
             ]
             assert len(token_calls) > 0, "Token metrics should still be recorded"
+
+
+class TestIsRecordingGuard:
+    def test_update_span_with_final_data_when_not_recording(self, mock_otel: Any) -> None:
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        span = MockOTelSpan()
+        span.ended = True
+        span_data = MockGenerationSpanData(usage={"input_tokens": 100})
+        processor._update_span_with_final_data(span, span_data)
+        assert len(span.attributes) == 0
+
+    def test_add_span_events_when_not_recording(self, mock_otel: Any) -> None:
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        span = MockOTelSpan()
+        span.ended = True
+        span_data = MockGenerationSpanData(input=[{"role": "user"}], output=[{"role": "assistant"}])
+        processor._add_span_events(span, span_data)
+        assert len(span.events) == 0
+
+    def test_on_trace_end_when_not_recording(self, mock_otel: Any) -> None:
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        processor.on_trace_start(trace)
+        otel_span = mock_otel["tracer"].spans[0]
+        otel_span.ended = True
+        processor.on_trace_end(trace)
+        assert otel_span.status is None
+
+    def test_on_span_end_error_when_not_recording(self, mock_otel: Any) -> None:
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span = MockSDKSpan(
+            trace_id="trace_123", span_data=MockAgentSpanData(), error={"message": "test error"}
+        )
+        processor.on_trace_start(trace)
+        processor.on_span_start(span)
+        otel_span = mock_otel["tracer"].spans[1]
+        otel_span.ended = True
+        initial_attrs = len(otel_span.attributes)
+        processor.on_span_end(span)
+        assert len(otel_span.attributes) == initial_attrs
+        assert otel_span.status is None

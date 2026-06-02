@@ -372,6 +372,32 @@ class TestOpenTelemetryTracingProcessor:
         assert span.attributes["agent.metadata.user_id"] == "user_789"
         assert span.attributes["agent.metadata.session"] == "sess_abc"
 
+    def test_on_trace_start_adds_baggage_attributes(self, mock_otel: Any) -> None:
+        """Test that on_trace_start stamps baggage keys on the workflow root span."""
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
+
+        mock_otel["baggage"].get_baggage.side_effect = lambda key: {
+            "session_id": "sess-001",
+            "org_id": "org-002",
+            "conversation_id": "conv-003",
+            "team": "core",
+        }.get(key)
+
+        config = ProcessorConfig(baggage_keys=["session_id", "org_id", "conversation_id", "team"])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        trace = MockTrace(trace_id="trace_baggage", name="Workflow")
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+
+        span = mock_otel["tracer"].spans[0]
+        assert span.attributes["session_id"] == "sess-001"
+        assert span.attributes["org_id"] == "org-002"
+        assert span.attributes["conversation_id"] == "conv-003"
+        assert span.attributes["team"] == "core"
+
     def test_on_trace_end_closes_span(self, mock_otel: Any) -> None:
         """Test that on_trace_end closes the OTel span."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
@@ -1135,38 +1161,50 @@ class TestHelperFunctions:
 
     def test_safe_attribute_value_string(self) -> None:
         """Test _safe_attribute_value with string."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         assert _safe_attribute_value("test") == "test"
 
     def test_safe_attribute_value_int(self) -> None:
         """Test _safe_attribute_value with int."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         assert _safe_attribute_value(42) == 42
 
     def test_safe_attribute_value_float(self) -> None:
         """Test _safe_attribute_value with float."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         assert _safe_attribute_value(3.14) == 3.14
 
     def test_safe_attribute_value_bool(self) -> None:
         """Test _safe_attribute_value with bool."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         assert _safe_attribute_value(True) is True
         assert _safe_attribute_value(False) is False
 
     def test_safe_attribute_value_none(self) -> None:
         """Test _safe_attribute_value with None."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         assert _safe_attribute_value(None) == ""
 
     def test_safe_attribute_value_dict(self) -> None:
         """Test _safe_attribute_value with dict (JSON serialization)."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         result = _safe_attribute_value({"a": 1, "b": "test"})
         assert isinstance(result, str)
@@ -1175,14 +1213,18 @@ class TestHelperFunctions:
 
     def test_safe_attribute_value_list(self) -> None:
         """Test _safe_attribute_value with list (JSON serialization)."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         result = _safe_attribute_value([1, 2, 3])
         assert result == "[1, 2, 3]"
 
     def test_safe_attribute_value_non_serializable(self) -> None:
         """Test _safe_attribute_value with non-serializable object."""
-        from openai_agents_opentelemetry.opentelemetry_processor import _safe_attribute_value
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
 
         class CustomObject:
             def __str__(self) -> str:
@@ -1552,7 +1594,10 @@ class TestProcessorConfig:
 
     def test_processor_accepts_config(self, mock_otel: Any) -> None:
         """Test that processor accepts ProcessorConfig."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_prompts=False)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1564,7 +1609,10 @@ class TestSpanEvents:
 
     def test_generation_span_prompt_event(self, mock_otel: Any) -> None:
         """Test generation span adds prompt event when configured."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_prompts=True)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1587,7 +1635,10 @@ class TestSpanEvents:
 
     def test_generation_span_completion_event(self, mock_otel: Any) -> None:
         """Test generation span adds completion event when configured."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_completions=True)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1612,7 +1663,10 @@ class TestSpanEvents:
 
     def test_generation_span_no_events_when_disabled(self, mock_otel: Any) -> None:
         """Test generation span does not add events when capture is disabled."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_prompts=False, capture_completions=False)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1635,7 +1689,10 @@ class TestSpanEvents:
 
     def test_function_span_input_event(self, mock_otel: Any) -> None:
         """Test function span adds input event when configured."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_tool_inputs=True)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1655,7 +1712,10 @@ class TestSpanEvents:
 
     def test_function_span_output_event(self, mock_otel: Any) -> None:
         """Test function span adds output event when configured."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_tool_outputs=True)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1677,7 +1737,10 @@ class TestSpanEvents:
 
     def test_function_span_no_events_when_disabled(self, mock_otel: Any) -> None:
         """Test function span does not add events when capture is disabled."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(capture_tool_inputs=False, capture_tool_outputs=False)
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -1742,7 +1805,10 @@ class TestContentFilter:
 
     def test_content_filter_applied_to_prompt(self, mock_otel: Any) -> None:
         """Test content filter is applied to prompt content."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         def redact_filter(content: str, context: str) -> str:
             return content.replace("secret", "[REDACTED]")
@@ -1769,7 +1835,10 @@ class TestContentFilter:
 
     def test_content_filter_applied_to_completion(self, mock_otel: Any) -> None:
         """Test content filter is applied to completion content."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         def redact_filter(content: str, context: str) -> str:
             return content.replace("password", "[HIDDEN]")
@@ -1797,7 +1866,10 @@ class TestContentFilter:
 
     def test_content_filter_receives_context(self, mock_otel: Any) -> None:
         """Test content filter receives correct context parameter."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         contexts_received: list[str] = []
 
@@ -1829,7 +1901,10 @@ class TestContentFilter:
 
     def test_content_filter_exception_handled(self, mock_otel: Any) -> None:
         """Test content filter exceptions are handled gracefully."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         def failing_filter(content: str, context: str) -> str:
             raise ValueError("Filter failed")
@@ -1857,7 +1932,10 @@ class TestContentFilter:
 
     def test_content_filter_applied_to_tool_input(self, mock_otel: Any) -> None:
         """Test content filter is applied to tool input."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         def redact_filter(content: str, context: str) -> str:
             if context == "tool_input":
@@ -1948,7 +2026,9 @@ class TestCreateResource:
     def test_create_resource_import_error(self) -> None:
         """Test create_resource raises ImportError when SDK not installed."""
         with patch.dict("sys.modules", {"opentelemetry.sdk.resources": None}):
-            from openai_agents_opentelemetry.opentelemetry_processor import create_resource
+            from openai_agents_opentelemetry.opentelemetry_processor import (
+                create_resource,
+            )
 
             with pytest.raises(ImportError, match="OpenTelemetry SDK is required"):
                 create_resource(service_name="test-service")
@@ -2317,7 +2397,10 @@ class TestBaggageSupport:
 
     def test_baggage_attributes_added_to_span(self, mock_otel: Any) -> None:
         """Test that baggage values are added as span attributes."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         # Configure baggage to return values
         mock_otel["baggage"].get_baggage.side_effect = lambda key: {
@@ -2346,7 +2429,10 @@ class TestBaggageSupport:
 
     def test_baggage_missing_key_not_added(self, mock_otel: Any) -> None:
         """Test that missing baggage keys are not added as attributes."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         # Configure baggage to return None for missing keys
         mock_otel["baggage"].get_baggage.return_value = None
@@ -2370,7 +2456,10 @@ class TestBaggageSupport:
 
     def test_baggage_no_keys_configured_skips_lookup(self, mock_otel: Any) -> None:
         """Test that baggage lookup is skipped when no keys configured."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         config = ProcessorConfig(baggage_keys=[])  # Empty list
         processor = OpenTelemetryTracingProcessor(config=config)
@@ -2390,7 +2479,10 @@ class TestBaggageSupport:
 
     def test_baggage_exception_handled_gracefully(self, mock_otel: Any) -> None:
         """Test that exceptions during baggage reading are handled gracefully."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         # Configure baggage to raise an exception
         mock_otel["baggage"].get_baggage.side_effect = RuntimeError("Baggage error")
@@ -2765,7 +2857,10 @@ class TestIssue1DictToolInputs:
 
     def test_function_span_respects_config_max_attribute_length(self, mock_otel: Any) -> None:
         """Test that tool arguments respect ProcessorConfig.max_attribute_length."""
-        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor, ProcessorConfig
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
 
         # Use a small max_attribute_length
         config = ProcessorConfig(max_attribute_length=50)
@@ -3068,7 +3163,9 @@ class TestIsRecordingGuard:
         processor = OpenTelemetryTracingProcessor()
         trace = MockTrace(trace_id="trace_123")
         span = MockSDKSpan(
-            trace_id="trace_123", span_data=MockAgentSpanData(), error={"message": "test error"}
+            trace_id="trace_123",
+            span_data=MockAgentSpanData(),
+            error={"message": "test error"},
         )
         processor.on_trace_start(trace)
         processor.on_span_start(span)

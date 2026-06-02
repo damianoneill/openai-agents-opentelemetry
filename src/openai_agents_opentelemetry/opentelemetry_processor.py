@@ -250,9 +250,14 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
         """
         self._config = config or ProcessorConfig()
         self._enable_metrics = enable_metrics
-        trace, span_kind_class, status_class, status_code_class, otel_context, baggage = (
-            _try_import_opentelemetry()
-        )
+        (
+            trace,
+            span_kind_class,
+            status_class,
+            status_code_class,
+            otel_context,
+            baggage,
+        ) = _try_import_opentelemetry()
 
         self._trace = trace
         self._SpanKind = span_kind_class
@@ -374,6 +379,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 for key, value in metadata.items():
                     attr_key = f"{_ATTR_PREFIX_AGENT}.metadata.{key}"
                     span.set_attribute(attr_key, _safe_attribute_value(value))
+
+            self._add_baggage_attributes(span)
 
             with self._lock:
                 self._trace_root_spans[trace_id] = span
@@ -559,7 +566,10 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             for _, span in list(self._active_spans.items()):
                 try:
                     span.set_status(
-                        self._Status(self._StatusCode.ERROR, "Span not properly closed at shutdown")
+                        self._Status(
+                            self._StatusCode.ERROR,
+                            "Span not properly closed at shutdown",
+                        )
                     )
                     span.end()
                 except Exception:
@@ -569,7 +579,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                 try:
                     span.set_status(
                         self._Status(
-                            self._StatusCode.ERROR, "Trace not properly closed at shutdown"
+                            self._StatusCode.ERROR,
+                            "Trace not properly closed at shutdown",
                         )
                     )
                     span.end()
@@ -898,7 +909,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             try:
                 input_preview = json.dumps(list(input_data)[:3])
                 otel_span.set_attribute(
-                    f"{_ATTR_PREFIX_GEN_AI}.input.preview", _truncate_string(input_preview, 1024)
+                    f"{_ATTR_PREFIX_GEN_AI}.input.preview",
+                    _truncate_string(input_preview, 1024),
                 )
             except Exception:
                 pass
@@ -908,7 +920,8 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             try:
                 output_preview = json.dumps(list(output_data)[:3])
                 otel_span.set_attribute(
-                    f"{_ATTR_PREFIX_GEN_AI}.output.preview", _truncate_string(output_preview, 1024)
+                    f"{_ATTR_PREFIX_GEN_AI}.output.preview",
+                    _truncate_string(output_preview, 1024),
                 )
             except Exception:
                 pass
@@ -1216,7 +1229,11 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
 
         try:
             self._handoff_counter.add(
-                1, attributes={"agent.handoff.from": from_agent, "agent.handoff.to": to_agent}
+                1,
+                attributes={
+                    "agent.handoff.from": from_agent,
+                    "agent.handoff.to": to_agent,
+                },
             )
         except Exception as e:
             logger.warning(f"Failed to record handoff metric: {e}")
@@ -1396,7 +1413,10 @@ def create_metrics_views() -> list[Any]:
         ```
     """
     try:
-        from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
+        from opentelemetry.sdk.metrics.view import (
+            ExplicitBucketHistogramAggregation,
+            View,
+        )
     except ImportError as e:
         raise ImportError(
             "OpenTelemetry SDK is required for create_metrics_views. "

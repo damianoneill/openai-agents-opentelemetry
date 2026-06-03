@@ -398,6 +398,25 @@ class TestOpenTelemetryTracingProcessor:
         assert span.attributes["conversation_id"] == "conv-003"
         assert span.attributes["team"] == "core"
 
+    def test_on_trace_start_does_not_stamp_missing_baggage(self, mock_otel: Any) -> None:
+        """Test that baggage keys with no value are not stamped as span attributes."""
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
+
+        mock_otel["baggage"].get_baggage.return_value = None
+
+        config = ProcessorConfig(baggage_keys=["session_id", "org_id"])
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        trace = MockTrace(trace_id="trace_no_baggage", name="Workflow")
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+
+        span = mock_otel["tracer"].spans[0]
+        assert "session_id" not in span.attributes
+        assert "org_id" not in span.attributes
+
     def test_on_trace_end_closes_span(self, mock_otel: Any) -> None:
         """Test that on_trace_end closes the OTel span."""
         from openai_agents_opentelemetry import OpenTelemetryTracingProcessor

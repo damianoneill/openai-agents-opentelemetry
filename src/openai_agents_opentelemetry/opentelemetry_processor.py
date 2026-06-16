@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -882,6 +882,18 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             if result:
                 otel_span.set_attribute("mcp.tools.count", len(result))
                 otel_span.set_attribute("mcp.tools.list", json.dumps(result[:20]))
+        elif span_type == "custom":
+            # Custom spans commonly populate ``data`` during the span's lifetime
+            # (the value is only known once the wrapped work completes), so the
+            # snapshot taken in ``_map_custom_span`` at span start misses it.
+            # Re-map the final ``data`` here so late-written attributes survive.
+            # Note: when ``data`` was already populated at span start,
+            # ``_map_custom_span`` will have set these attributes already and
+            # this loop overwrites them with identical values — harmless.
+            data = getattr(span_data, "data", None)
+            if data:
+                for key, value in data.items():
+                    otel_span.set_attribute(f"custom.data.{key}", _safe_attribute_value(value))
 
     def _update_generation_span(self, otel_span: Any, span_data: Any) -> None:
         """Update generation span with final usage metrics and output.
@@ -1336,22 +1348,40 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
             logger.warning(f"Failed to record error metric: {e}")
 
 
-def _safe_attribute_value(value: Any) -> str | int | float | bool:
+def _safe_attribute_value(
+    value: Any,
+) -> str | int | float | bool | Sequence[str] | Sequence[int] | Sequence[float] | Sequence[bool]:
     """Convert a value to a safe OTel attribute type.
 
     OpenTelemetry attributes must be primitive types (str, int, float, bool)
     or sequences thereof. This function converts complex types to JSON strings.
 
+    Homogeneous lists of a single primitive type are passed through as OTel
+    sequence attributes so they remain individually queryable. Heterogeneous
+    or non-primitive lists fall through to JSON serialisation.
+
     Args:
         value: The value to convert.
 
     Returns:
-        A primitive type suitable for OTel attributes.
+        A primitive type or homogeneous primitive sequence suitable for OTel attributes.
     """
     if isinstance(value, (str, int, float, bool)):
         return value
     if value is None:
         return ""
+    if isinstance(value, list):
+        if not value or (
+            isinstance(value[0], (str, int, float, bool))
+            # Exact type identity (not isinstance) is intentional: bool is a
+            # subclass of int, so isinstance(True, int) is True.  Using type()
+            # keeps [True, False] and [1, 2] as distinct homogeneous sequences
+            # and correctly rejects mixed [True, 1] lists.
+            and all(type(v) is type(value[0]) for v in value)
+        ):
+            # Return a copy so callers cannot mutate span_data.data values
+            # through the returned reference.
+            return list(value)
     try:
         return json.dumps(value)
     except (TypeError, ValueError):

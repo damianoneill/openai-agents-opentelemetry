@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1]: https://github.com/damianoneill/openai-agents-opentelemetry/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/damianoneill/openai-agents-opentelemetry/releases/tag/v0.1.0
 
+## v0.4.0 (2026-06-16)
+
+### Feat
+
+- capture late-written custom span data and emit list values as OTel sequence attributes
+
 ## v0.3.0 (2026-06-03)
 
 ### Feat

@@ -777,6 +777,102 @@ class TestCustomSpan:
         assert otel_span.attributes["custom.data.key1"] == "value1"
         assert otel_span.attributes["custom.data.key2"] == 42
 
+    def test_custom_span_data_prepopulated_at_start_is_correct_at_end(self, mock_otel: Any) -> None:
+        """Pre-populated data set before span start survives the double-write at span end.
+
+        When ``data`` is already populated before ``on_span_start``, attributes
+        are written once by ``_map_custom_span`` and then overwritten with the
+        same values by the ``on_span_end`` custom branch.  The final attribute
+        values must be correct and no error should be raised.
+        """
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span_data = MockCustomSpanData(name="eager_op", data={"ready": True, "count": 3})
+        span = MockSDKSpan(trace_id="trace_123", span_data=span_data)
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        # Attributes set at start.
+        assert otel_span.attributes["custom.data.ready"] is True
+        assert otel_span.attributes["custom.data.count"] == 3
+
+        # on_span_end overwrites with the same values — must not raise or corrupt.
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        assert otel_span.attributes["custom.data.ready"] is True
+        assert otel_span.attributes["custom.data.count"] == 3
+
+    def test_custom_span_data_written_after_start_is_captured(self, mock_otel: Any) -> None:
+        """Data populated during the span's lifetime is captured at span end.
+
+        ``custom_span`` initialises ``data`` to an empty dict, and callers
+        typically fill it in only once the wrapped work completes (the value is
+        not known at span start). The start-time snapshot therefore misses it,
+        so ``on_span_end`` must re-map the final ``data``.
+        """
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        # Span starts with no data, as ``custom_span(name)`` would.
+        span_data = MockCustomSpanData(name="skill_routing", data={})
+        span = MockSDKSpan(trace_id="trace_123", span_data=span_data)
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        assert "custom.data.selected" not in otel_span.attributes
+
+        # Caller fills in the decision once routing completes, then the span ends.
+        span_data.data.update({"selected": '["wan-diagnostics"]', "cache_hit": False})
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        assert otel_span.attributes["custom.data.selected"] == '["wan-diagnostics"]'
+        assert otel_span.attributes["custom.data.cache_hit"] is False
+
+    def test_custom_span_list_data_emitted_as_sequence_attribute(self, mock_otel: Any) -> None:
+        """Homogeneous list[str] values are emitted as OTel sequence attributes.
+
+        Fields like ``candidates``, ``selected``, ``rejected``, and ``always_on``
+        in the skill_routing span are list[str]. They must pass through as proper
+        OTel sequence attributes so they remain individually queryable in backends
+        like Datadog, rather than being serialised to an opaque JSON string.
+        """
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+        trace = MockTrace(trace_id="trace_123")
+        span_data = MockCustomSpanData(name="skill_routing", data={})
+        span = MockSDKSpan(trace_id="trace_123", span_data=span_data)
+        processor.on_trace_start(trace)  # type: ignore[arg-type]
+        processor.on_span_start(span)  # type: ignore[arg-type]
+
+        span_data.data.update(
+            {
+                "selected": ["wan-diagnostics"],
+                "candidates": ["wan-diagnostics", "device-health"],
+                "always_on": ["markdown-guidelines"],
+                "cache_hit": False,
+                "selected_count": 1,
+            }
+        )
+        processor.on_span_end(span)  # type: ignore[arg-type]
+
+        otel_span = mock_otel["tracer"].spans[1]
+        # Lists must be sequence attributes, not JSON strings.
+        assert otel_span.attributes["custom.data.selected"] == ["wan-diagnostics"]
+        assert otel_span.attributes["custom.data.candidates"] == [
+            "wan-diagnostics",
+            "device-health",
+        ]
+        assert otel_span.attributes["custom.data.always_on"] == ["markdown-guidelines"]
+        # Non-list primitives still pass through unchanged.
+        assert otel_span.attributes["custom.data.cache_hit"] is False
+        assert otel_span.attributes["custom.data.selected_count"] == 1
+
 
 class TestResponseSpan:
     """Tests for response span mapping."""
@@ -1230,14 +1326,27 @@ class TestHelperFunctions:
         parsed = json.loads(result)
         assert parsed == {"a": 1, "b": "test"}
 
-    def test_safe_attribute_value_list(self) -> None:
-        """Test _safe_attribute_value with list (JSON serialization)."""
+    def test_safe_attribute_value_homogeneous_list(self) -> None:
+        """Homogeneous primitive lists are returned as OTel sequence attributes."""
         from openai_agents_opentelemetry.opentelemetry_processor import (
             _safe_attribute_value,
         )
 
-        result = _safe_attribute_value([1, 2, 3])
-        assert result == "[1, 2, 3]"
+        assert _safe_attribute_value([1, 2, 3]) == [1, 2, 3]
+        assert _safe_attribute_value(["a", "b"]) == ["a", "b"]
+        assert _safe_attribute_value([True, False]) == [True, False]
+        # Empty list is a valid OTel sequence attribute.
+        assert _safe_attribute_value([]) == []
+
+    def test_safe_attribute_value_heterogeneous_list_serialised(self) -> None:
+        """Heterogeneous lists fall back to JSON serialisation."""
+        from openai_agents_opentelemetry.opentelemetry_processor import (
+            _safe_attribute_value,
+        )
+
+        # Mixed types — not a valid OTel sequence, so JSON string.
+        result = _safe_attribute_value(["a", 1])
+        assert result == '["a", 1]'
 
     def test_safe_attribute_value_non_serializable(self) -> None:
         """Test _safe_attribute_value with non-serializable object."""

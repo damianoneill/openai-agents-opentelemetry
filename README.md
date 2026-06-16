@@ -54,6 +54,7 @@ The processor maps SDK spans to OpenTelemetry spans following [OpenTelemetry Sem
 | Handoff       | `handoff: {from} -> {to}` | `agent.handoff.from`, `agent.handoff.to`                                                  |
 | Guardrail     | `guardrail: {name}`       | `agent.guardrail.triggered`                                                               |
 | Response      | `gen_ai.response`         | `gen_ai.response.id`, `gen_ai.response.model`                                             |
+| Custom        | `custom: {name}`          | `custom.name`, `custom.data.*`                                                            |
 
 ## Configuration
 

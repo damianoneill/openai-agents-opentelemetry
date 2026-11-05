@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ProcessorConfig.datadog_llmobs_enabled` sets `dd_llmobs_enabled` on workflow root spans to opt in or out of Datadog LLM Observability conversion (see Datadog's [OpenTelemetry instrumentation](https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation/#enabling-llm-observability-conversion) docs). Does not affect APM sampling or retention
 - Initial release of `openai-agents-opentelemetry`
 - `OpenTelemetryTracingProcessor` class that bridges OpenAI Agents SDK traces to OpenTelemetry
 - Support for all SDK span types:

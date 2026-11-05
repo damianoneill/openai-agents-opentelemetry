@@ -78,6 +78,23 @@ config = ProcessorConfig(
 processor = OpenTelemetryTracingProcessor(config=config)
 ```
 
+### Datadog LLM Observability Conversion
+
+Datadog converts OTel `gen_ai.*` spans into LLM Observability (billed separately) based on the `dd_llmobs_enabled` attribute. Set `datadog_llmobs_enabled` to add it to each workflow root span:
+
+```python
+config = ProcessorConfig(datadog_llmobs_enabled=False)
+processor = OpenTelemetryTracingProcessor(config=config)
+```
+
+- `True`: enables conversion of the trace's generative AI spans.
+- `False`: prevents conversion of the entire trace, so the spans stay in APM only.
+- `None` (default): sets nothing.
+
+Per Datadog, setting the attribute on any span in a trace enables conversion, and an explicit `false` on any span prevents conversion of the whole trace. The attribute controls LLM Observability conversion only. It does not affect APM sampling or retention.
+
+See Datadog's [OpenTelemetry instrumentation](https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation/#enabling-llm-observability-conversion) documentation, "Enabling LLM Observability conversion". The attribute can also be set process-wide with `OTEL_RESOURCE_ATTRIBUTES=dd_llmobs_enabled=false`.
+
 ### Content Filtering / PII Redaction
 
 Apply custom filtering to redact sensitive data before capture:

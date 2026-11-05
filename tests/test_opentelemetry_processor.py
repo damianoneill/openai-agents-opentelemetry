@@ -2506,6 +2506,34 @@ class TestMetricsBuckets:
         )
 
 
+class TestDatadogLLMObsAttribute:
+    """Tests for the dd_llmobs_enabled root span attribute."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_attribute_set_on_root_span(self, mock_otel: Any, enabled: bool) -> None:
+        from openai_agents_opentelemetry import (
+            OpenTelemetryTracingProcessor,
+            ProcessorConfig,
+        )
+
+        config = ProcessorConfig(datadog_llmobs_enabled=enabled)
+        processor = OpenTelemetryTracingProcessor(config=config)
+
+        processor.on_trace_start(MockTrace(trace_id="trace-1"))
+
+        root_span = mock_otel["tracer"].spans[0]
+        assert root_span.attributes["dd_llmobs_enabled"] is enabled
+
+    def test_attribute_absent_by_default(self, mock_otel: Any) -> None:
+        from openai_agents_opentelemetry import OpenTelemetryTracingProcessor
+
+        processor = OpenTelemetryTracingProcessor()
+
+        processor.on_trace_start(MockTrace(trace_id="trace-1"))
+
+        assert "dd_llmobs_enabled" not in mock_otel["tracer"].spans[0].attributes
+
+
 class TestBaggageSupport:
     """Tests for baggage support (Phase 5)."""
 

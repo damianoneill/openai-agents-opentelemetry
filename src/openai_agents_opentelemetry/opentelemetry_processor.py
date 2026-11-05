@@ -123,6 +123,13 @@ class ProcessorConfig:
             Receives (content, context) and returns filtered content.
         baggage_keys: List of baggage keys to read from OpenTelemetry context and
             add as span attributes. Enables context propagation across services.
+        datadog_llmobs_enabled: Controls Datadog's conversion of gen_ai spans into
+            LLM Observability. When set, the ``dd_llmobs_enabled`` attribute is added
+            to each workflow root span. ``False`` stops Datadog converting the whole
+            trace (spans stay in APM only). ``None`` (default) sets nothing. This
+            does not affect APM sampling or retention. See Datadog's "Enabling LLM
+            Observability conversion" in
+            https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation/#enabling-llm-observability-conversion
 
     Example:
         ```python
@@ -162,6 +169,9 @@ class ProcessorConfig:
     # Baggage keys to read from OpenTelemetry context and add as span attributes
     # Enables propagation of context like user.id, session.id across agent spans
     baggage_keys: list[str] = field(default_factory=list)
+
+    # Datadog opt-in/out for converting gen_ai spans to LLM Observability (billed separately)
+    datadog_llmobs_enabled: bool | None = None
 
 
 def _try_import_opentelemetry() -> tuple[Any, Any, Any, Any, Any, Any]:
@@ -381,6 +391,9 @@ class OpenTelemetryTracingProcessor(TracingProcessor):
                     span.set_attribute(attr_key, _safe_attribute_value(value))
 
             self._add_baggage_attributes(span)
+
+            if self._config.datadog_llmobs_enabled is not None:
+                span.set_attribute("dd_llmobs_enabled", self._config.datadog_llmobs_enabled)
 
             with self._lock:
                 self._trace_root_spans[trace_id] = span
